@@ -12,6 +12,7 @@
       </template>
 
       <ElForm
+        v-if="!createdToken"
         ref="formRef"
         :model="formData"
         :rules="rules"
@@ -67,6 +68,37 @@
           </ElButton>
         </ElFormItem>
       </ElForm>
+
+      <!-- 创建成功：展示推送令牌（后端仅创建时返回一次，必须立即展示给用户保存） -->
+      <template v-else>
+        <ElAlert
+          type="success"
+          :closable="false"
+          show-icon
+          title="来源创建成功"
+          description="下方为该来源的推送令牌，仅此一次显示，请立即复制保存。之后可在来源详情页查看。"
+          class="mb-4 max-w-2xl"
+        />
+        <ElAlert
+          type="warning"
+          :closable="false"
+          show-icon
+          title="令牌等同于推送凭据，请勿提交到公开仓库或明文日志"
+          class="mb-4 max-w-2xl"
+        />
+        <ElInput :model-value="createdToken" readonly size="large" class="max-w-2xl">
+          <template #append>
+            <ElButton @click="handleCopyCreatedToken">
+              <IconifyIcon icon="mdi:content-copy" />
+            </ElButton>
+          </template>
+        </ElInput>
+        <div class="mt-4">
+          <ElButton type="primary" @click="router.push('/source/list')">
+            我已保存令牌，返回列表
+          </ElButton>
+        </div>
+      </template>
     </ElCard>
   </div>
 </template>
@@ -75,6 +107,7 @@
 import { ref, reactive, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import {
+  ElAlert,
   ElCard,
   ElForm,
   ElFormItem,
@@ -103,6 +136,8 @@ const formData = reactive<SourceApi.CreateSourceReq>({
 });
 
 const channels = ref<ChannelApi.ChannelDTO[]>([]);
+// 创建成功后返回的推送令牌（仅创建时返回一次）
+const createdToken = ref('');
 
 const rules: FormRules = {
   name: [
@@ -156,13 +191,40 @@ async function handleSubmit() {
       data.channel_ids = formData.channel_ids;
     }
 
-    await createSourceApi(data);
+    const res = await createSourceApi(data);
+    createdToken.value = res?.token ?? '';
     ElMessage.success($t('page.source.createSuccess'));
-    router.push('/source/list');
+    if (!createdToken.value) {
+      // 异常兜底：后端未返回令牌时保持旧行为返回列表
+      router.push('/source/list');
+    }
   } catch {
     ElMessage.error('创建来源失败');
   } finally {
     submitting.value = false;
+  }
+}
+
+// 复制新建来源的令牌（HTTP 环境降级：clipboard API 需安全上下文）
+async function handleCopyCreatedToken() {
+  if (!createdToken.value) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(createdToken.value);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = createdToken.value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!ok) throw new Error('execCommand copy failed');
+    }
+    ElMessage.success('令牌已复制到剪贴板');
+  } catch {
+    ElMessage.error('复制失败，请手动选择复制');
   }
 }
 

@@ -225,7 +225,8 @@ async function handleViewToken() {
   try {
     const res = await getSourceTokenApi(id, { password });
     tokenValue.value = res.token;
-    showTokenPlainText.value = false;
+    // 用户已通过密码二次验证并明确要求"查看令牌"，直接显示明文（眼睛图标可切回脱敏）
+    showTokenPlainText.value = true;
     ElMessage.success($t('page.source.viewTokenSuccess'));
   } catch {
     ElMessage.error('查看令牌失败');
@@ -236,7 +237,21 @@ async function handleViewToken() {
 async function handleCopyToken() {
   if (!tokenValue.value) return;
   try {
-    await navigator.clipboard.writeText(tokenValue.value);
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(tokenValue.value);
+    } else {
+      // HTTP 环境降级：navigator.clipboard 仅在 HTTPS 安全上下文存在，
+      // 局域网 HTTP 部署时改用临时 textarea + execCommand
+      const textarea = document.createElement('textarea');
+      textarea.value = tokenValue.value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!ok) throw new Error('execCommand copy failed');
+    }
     ElMessage.success($t('page.source.tokenCopied'));
   } catch {
     ElMessage.error('复制失败');
@@ -255,7 +270,8 @@ async function handleResetToken() {
   try {
     const res = await resetSourceTokenApi(id, { password });
     tokenValue.value = res.token;
-    showTokenPlainText.value = false;
+    // 重置后立即展示新令牌明文（眼睛图标可切回脱敏）
+    showTokenPlainText.value = true;
     ElMessage.success($t('page.source.resetTokenSuccess'));
   } catch {
     ElMessage.error('重置令牌失败');
