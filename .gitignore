@@ -1,0 +1,19 @@
+# ===== 编译产物 / 大文件（build.sh 可随时重新生成）=====
+out/
+device-package/*.tar
+device-package/*.tar.gz
+*.tar.gz
+
+# ===== 第三方源码 clone（补丁已固化在 patches/）=====
+OctoTify/
+
+# ===== 工具链与依赖（build.sh 自动下载）=====
+tools/
+**/node_modules/
+
+# ===== 本地环境 =====
+.env
+*.log
+
+# 编译出的后端二进制（build.sh 再生；tar 的 SHA256 记录在交付文档）
+deploy/octotify-server
