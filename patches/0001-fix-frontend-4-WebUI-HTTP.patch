@@ -1,0 +1,210 @@
+From 1540e57f7e29fc9841082d7be8afd64f96d53121 Mon Sep 17 00:00:00 2001
+From: OctoTify ARMv7 Builder <builder@armv7.local>
+Date: Mon, 7 Sep 2026 23:50:05 +0800
+Subject: [PATCH] =?UTF-8?q?fix(frontend):=204=E5=A4=84=E4=BF=AE=E5=A4=8D?=
+ =?UTF-8?q?=E4=BD=BFWebUI=E5=9C=A8=E5=B1=80=E5=9F=9F=E7=BD=91HTTP=E9=83=A8?=
+ =?UTF-8?q?=E7=BD=B2=E4=B8=8B=E5=AE=8C=E6=95=B4=E5=8F=AF=E7=94=A8?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+1. locale JSON(zh-CN/en-US page.json): 去除尾随逗号, 修复vite8/rolldown构建失败
+2. source/detail.vue: 复制按钮HTTP降级(navigator.clipboard仅HTTPS可用, 局域网HTTP必失败)
+3. source/detail.vue: 查看令牌/重置令牌通过密码二次验证后直接显示明文(原逻辑仍强制脱敏)
+4. source/create.vue: 创建成功后展示后端返回的推送令牌(原代码丢弃响应, UI无任何途径获取初始token)
+---
+ .../web-ele/src/locales/langs/en-US/page.json |  2 +-
+ .../web-ele/src/locales/langs/zh-CN/page.json |  2 +-
+ .../apps/web-ele/src/views/source/create.vue  | 66 ++++++++++++++++++-
+ .../apps/web-ele/src/views/source/detail.vue  | 22 ++++++-
+ 4 files changed, 85 insertions(+), 7 deletions(-)
+
+diff --git a/frontend/apps/web-ele/src/locales/langs/en-US/page.json b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+index 87e2ef7..e68c6b4 100644
+--- a/frontend/apps/web-ele/src/locales/langs/en-US/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+@@ -136,7 +136,7 @@
+     "feishu": "Feishu",
+     "dingtalk": "DingTalk",
+     "telegram": "Telegram",
+-    "email": "Email",
++    "email": "Email"
+   },
+   "message": {
+     "title": "Messages",
+diff --git a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+index 2dfde8a..a7df567 100644
+--- a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+@@ -136,7 +136,7 @@
+     "feishu": "飞书",
+     "dingtalk": "钉钉",
+     "telegram": "Telegram",
+-    "email": "邮件",
++    "email": "邮件"
+   },
+   "message": {
+     "title": "消息记录",
+diff --git a/frontend/apps/web-ele/src/views/source/create.vue b/frontend/apps/web-ele/src/views/source/create.vue
+index fed6960..3562bfe 100644
+--- a/frontend/apps/web-ele/src/views/source/create.vue
++++ b/frontend/apps/web-ele/src/views/source/create.vue
+@@ -12,6 +12,7 @@
+       </template>
+ 
+       <ElForm
++        v-if="!createdToken"
+         ref="formRef"
+         :model="formData"
+         :rules="rules"
+@@ -67,6 +68,37 @@
+           </ElButton>
+         </ElFormItem>
+       </ElForm>
++
++      <!-- 创建成功：展示推送令牌（后端仅创建时返回一次，必须立即展示给用户保存） -->
++      <template v-else>
++        <ElAlert
++          type="success"
++          :closable="false"
++          show-icon
++          title="来源创建成功"
++          description="下方为该来源的推送令牌，仅此一次显示，请立即复制保存。之后可在来源详情页查看。"
++          class="mb-4 max-w-2xl"
++        />
++        <ElAlert
++          type="warning"
++          :closable="false"
++          show-icon
++          title="令牌等同于推送凭据，请勿提交到公开仓库或明文日志"
++          class="mb-4 max-w-2xl"
++        />
++        <ElInput :model-value="createdToken" readonly size="large" class="max-w-2xl">
++          <template #append>
++            <ElButton @click="handleCopyCreatedToken">
++              <IconifyIcon icon="mdi:content-copy" />
++            </ElButton>
++          </template>
++        </ElInput>
++        <div class="mt-4">
++          <ElButton type="primary" @click="router.push('/source/list')">
++            我已保存令牌，返回列表
++          </ElButton>
++        </div>
++      </template>
+     </ElCard>
+   </div>
+ </template>
+@@ -75,6 +107,7 @@
+ import { ref, reactive, onMounted } from 'vue';
+ import { useRouter } from 'vue-router';
+ import {
++  ElAlert,
+   ElCard,
+   ElForm,
+   ElFormItem,
+@@ -103,6 +136,8 @@ const formData = reactive<SourceApi.CreateSourceReq>({
+ });
+ 
+ const channels = ref<ChannelApi.ChannelDTO[]>([]);
++// 创建成功后返回的推送令牌（仅创建时返回一次）
++const createdToken = ref('');
+ 
+ const rules: FormRules = {
+   name: [
+@@ -156,9 +191,13 @@ async function handleSubmit() {
+       data.channel_ids = formData.channel_ids;
+     }
+ 
+-    await createSourceApi(data);
++    const res = await createSourceApi(data);
++    createdToken.value = res?.token ?? '';
+     ElMessage.success($t('page.source.createSuccess'));
+-    router.push('/source/list');
++    if (!createdToken.value) {
++      // 异常兜底：后端未返回令牌时保持旧行为返回列表
++      router.push('/source/list');
++    }
+   } catch {
+     ElMessage.error('创建来源失败');
+   } finally {
+@@ -166,6 +205,29 @@ async function handleSubmit() {
+   }
+ }
+ 
++// 复制新建来源的令牌（HTTP 环境降级：clipboard API 需安全上下文）
++async function handleCopyCreatedToken() {
++  if (!createdToken.value) return;
++  try {
++    if (navigator.clipboard && window.isSecureContext) {
++      await navigator.clipboard.writeText(createdToken.value);
++    } else {
++      const textarea = document.createElement('textarea');
++      textarea.value = createdToken.value;
++      textarea.style.position = 'fixed';
++      textarea.style.opacity = '0';
++      document.body.appendChild(textarea);
++      textarea.select();
++      const ok = document.execCommand('copy');
++      document.body.removeChild(textarea);
++      if (!ok) throw new Error('execCommand copy failed');
++    }
++    ElMessage.success('令牌已复制到剪贴板');
++  } catch {
++    ElMessage.error('复制失败，请手动选择复制');
++  }
++}
++
+ function handleBack() {
+   router.push('/source/list');
+ }
+diff --git a/frontend/apps/web-ele/src/views/source/detail.vue b/frontend/apps/web-ele/src/views/source/detail.vue
+index b1df014..c438eec 100644
+--- a/frontend/apps/web-ele/src/views/source/detail.vue
++++ b/frontend/apps/web-ele/src/views/source/detail.vue
+@@ -225,7 +225,8 @@ async function handleViewToken() {
+   try {
+     const res = await getSourceTokenApi(id, { password });
+     tokenValue.value = res.token;
+-    showTokenPlainText.value = false;
++    // 用户已通过密码二次验证并明确要求"查看令牌"，直接显示明文（眼睛图标可切回脱敏）
++    showTokenPlainText.value = true;
+     ElMessage.success($t('page.source.viewTokenSuccess'));
+   } catch {
+     ElMessage.error('查看令牌失败');
+@@ -236,7 +237,21 @@ async function handleViewToken() {
+ async function handleCopyToken() {
+   if (!tokenValue.value) return;
+   try {
+-    await navigator.clipboard.writeText(tokenValue.value);
++    if (navigator.clipboard && window.isSecureContext) {
++      await navigator.clipboard.writeText(tokenValue.value);
++    } else {
++      // HTTP 环境降级：navigator.clipboard 仅在 HTTPS 安全上下文存在，
++      // 局域网 HTTP 部署时改用临时 textarea + execCommand
++      const textarea = document.createElement('textarea');
++      textarea.value = tokenValue.value;
++      textarea.style.position = 'fixed';
++      textarea.style.opacity = '0';
++      document.body.appendChild(textarea);
++      textarea.select();
++      const ok = document.execCommand('copy');
++      document.body.removeChild(textarea);
++      if (!ok) throw new Error('execCommand copy failed');
++    }
+     ElMessage.success($t('page.source.tokenCopied'));
+   } catch {
+     ElMessage.error('复制失败');
+@@ -255,7 +270,8 @@ async function handleResetToken() {
+   try {
+     const res = await resetSourceTokenApi(id, { password });
+     tokenValue.value = res.token;
+-    showTokenPlainText.value = false;
++    // 重置后立即展示新令牌明文（眼睛图标可切回脱敏）
++    showTokenPlainText.value = true;
+     ElMessage.success($t('page.source.resetTokenSuccess'));
+   } catch {
+     ElMessage.error('重置令牌失败');
+-- 
+2.43.0
+
