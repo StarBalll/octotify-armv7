@@ -67,18 +67,17 @@ export PATH="$TOOLS/$TC_DIR/bin:$PATH"
 log "[3/7] 拉取官方源码（锚定 VERSION 的 UPSTREAM_BASE，保证可复现构建）"
 # ------------------------------------------------------------------------------
 UPSTREAM_REF="${UPSTREAM_REF:-$UPSTREAM_BASE}"
-if [[ $CLONE -eq 1 ]]; then
-  if [[ -d "$REPO/.git" ]]; then
-    git -C "$REPO" fetch origin --tags
-  else
-    git clone https://github.com/loommii/OctoTify.git "$REPO"
-  fi
-  # 本地已有补丁分支也强制回到基线，由后续幂等补丁重放修复
-  git -C "$REPO" checkout -qf "$UPSTREAM_REF" 2>/dev/null || {
-    git -C "$REPO" fetch --unshallow origin 2>/dev/null || git -C "$REPO" fetch origin
-    git -C "$REPO" checkout -qf "$UPSTREAM_REF"
-  }
+# 仓库存在性对 --no-clone 同样必要：无 clone 时必须能检出基线
+if [[ ! -d "$REPO/.git" ]]; then
+  git clone https://github.com/loommii/OctoTify.git "$REPO"
+elif [[ $CLONE -eq 1 ]]; then
+  git -C "$REPO" fetch origin --tags
 fi
+# 无论是否重新 clone，都强制检出 UPSTREAM_REF 基线；补丁由后续幂等补丁重放
+git -C "$REPO" checkout -qf "$UPSTREAM_REF" 2>/dev/null || {
+  git -C "$REPO" fetch --unshallow origin 2>/dev/null || git -C "$REPO" fetch origin
+  git -C "$REPO" checkout -qf "$UPSTREAM_REF"
+}
 echo "上游基线: $(git -C "$REPO" rev-parse --short HEAD) ($(git -C "$REPO" log -1 --format=%cs HEAD))"
 
 # ------------------------------------------------------------------------------

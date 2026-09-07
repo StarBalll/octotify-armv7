@@ -25,6 +25,11 @@
 3. 产物：GH Release 附件（`octotify-armv7-v*.tar`）+ Docker Hub `<用户名>/octotify-armv7:latest,v<版本>`
 4. 不配置两个 Secret 时仅执行构建验证并发布 Release 附件，跳过 Docker Hub 推送（不报错）。
 
+## 可复现构建（Reproducible Build）
+
+本工程的构建是**输入级可复现**的：`build.sh` 锚定 `VERSION` 声明的上游 commit（`UPSTREAM_BASE`），幂等重放 `patches/` 全部修复，工具链版本固定——任何人重新构建得到的镜像在功能与层内容上等价。
+但 `docker save` 的 tar 内嵌构建时间戳（镜像 config/history），**tar 字节哈希每次构建必然不同**——完整性校验请使用各版本 Release 随附的 `.sha256` 文件（对应 `VERSION` 的 `IMAGE_TAR_SHA256`）。
+
 ## 命名规范（全项目统一）
 
 | 对象 | 规范名 | 说明 |

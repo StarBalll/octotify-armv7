@@ -10,5 +10,6 @@ UPSTREAM_PATCH_HEAD=1540e57
 # 目标平台
 TARGET_PLATFORM=linux/arm/v7
 TARGET_GOARM=7
-# 本版本产物指纹（构建后与实际输出核对）
+# 本版本发布产物指纹（= 该版本 Release 附件 tar 的 SHA256；docker save 含构建时间戳，
+# 重新构建的 tar 哈希必然不同——可复现性指"源码/补丁/依赖锚定"，见 README FAQ）
 IMAGE_TAR_SHA256=0b22a16ab8e3a7262b15543efef62a5179ebb863ee293de77e596f2fd51c1960
