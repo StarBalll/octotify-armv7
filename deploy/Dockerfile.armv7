@@ -1,0 +1,50 @@
+# ==============================================================================
+# OctoTify ARMv7 (linux/arm/v7, 32-bit) 专属运行镜像
+#
+# 使用前提：已在 x86_64 编译机上通过交叉编译得到以下产物（见 ../build/ 脚本）：
+#   ./octotify-server        —— Go 后端，linux/arm/v7 (GOARM=7) CGO 静态二进制
+#   ./dist/                  —— Vue 前端静态资源（vben web-ele 构建产物）
+#   ./config/                —— 后端配置（与官方 backend/config 完全一致）
+#   ./nginx.conf, ./entrypoint.sh —— 与官方 docker/ 目录逐字节一致
+#
+# 构建（在 x86_64 编译机上执行，需 binfmt/qemu 支持）：
+#   docker buildx build --platform linux/arm/v7 -t octotify-armv7:latest .
+# ==============================================================================
+
+FROM alpine:3.22
+
+# 运行时依赖：nginx（托管前端静态文件并反代 /api/）、CA 证书（HTTPS 推送）、时区数据
+# 与官方镜像一致：非 root 用户 app (uid/gid 1000)
+RUN apk add --no-cache ca-certificates tzdata nginx \
+    && addgroup -g 1000 app \
+    && adduser -D -G app -u 1000 app \
+    && mkdir -p /app/data/log /app/config/keys /var/log/nginx /var/lib/nginx /run/nginx \
+    # alpine 3.22 的 nginx 包将 /run/nginx 创建为 nginx:nginx 所有，而本镜像以 app 用户运行
+    # nginx，必须一并 chown，否则 nginx 写 /run/nginx/nginx.pid 报 Permission denied
+    && chown -R app:app /app /var/log/nginx /var/lib/nginx /run/nginx
+
+WORKDIR /app
+
+# 1) ARMv7 Go 后端二进制（CGO + SQLite，musl 静态链接，无任何运行时 libc 依赖）
+COPY octotify-server /app/octotify
+
+# 2) 后端配置（与官方 backend/config/config.yaml 一致；JWT 密钥首次启动自动生成到 /app/config/keys）
+COPY config/ /app/config/
+
+# 3) 前端静态资源（Vue3 + Element Plus，/usr/share/nginx/html 由 nginx 托管）
+COPY dist/ /usr/share/nginx/html/
+
+# 4) nginx 配置：5233 端口托管前端，/api/ 反代到 127.0.0.1:34123（与官方一致）
+COPY nginx.conf /etc/nginx/http.d/default.conf
+
+# 5) 启动脚本：后台 nginx + 前台 Go 后端，信号转发（与官方一致）
+COPY entrypoint.sh /entrypoint.sh
+
+RUN chmod +x /entrypoint.sh /app/octotify \
+    && chown -R app:app /app /usr/share/nginx/html
+
+USER app
+
+EXPOSE 5233
+
+ENTRYPOINT ["/entrypoint.sh"]

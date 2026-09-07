@@ -1,0 +1,1 @@
+var e={1:`success`,2:`danger`},t={100:`info`,200:`success`,300:`danger`},n={100:`待推送`,200:`成功`,300:`失败`};function r(t){var n;return(n=e[t==null?0:t])==null?`danger`:n}function i(e){var n;return(n=t[e==null?0:e])==null?`info`:n}function a(e){var t;return e==null?`--`:(t=n[e])==null?`未知(${e})`:t}export{a as n,i as r,r as t};

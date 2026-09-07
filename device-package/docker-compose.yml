@@ -1,0 +1,25 @@
+# OctoTify ARMv7 生产部署编排
+# 在 ARM32 (armv7) 设备上与 octotify-armv7.tar 放同一目录后执行：
+#   docker load -i octotify-armv7.tar && docker compose up -d
+services:
+  octotify:
+    image: octotify-armv7:latest
+    container_name: octotify
+    restart: unless-stopped
+    platform: linux/arm/v7
+    ports:
+      - "5233:5233"
+    volumes:
+      - octotify-data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      # 直接探活容器内后端 :34123（nginx 仅反代 /api/，5233 的 /ping 会回落到 index.html）
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:34123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  octotify-data:

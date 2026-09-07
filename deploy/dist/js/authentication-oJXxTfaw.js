@@ -1,0 +1,1 @@
+var e=`连接外部系统与通知渠道的消息总线平台`,t=`推送解耦、灵活路由、独立容错、易于扩展`,n=`登录以管理您的消息来源与通知渠道`,r=`创建账号，开始连接您的通知渠道`,i={pageTitle:e,pageDesc:t,loginSubtitle:n,signUpSubtitle:r};export{i as default,n as loginSubtitle,t as pageDesc,e as pageTitle,r as signUpSubtitle};
