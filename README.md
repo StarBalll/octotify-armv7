@@ -1,12 +1,31 @@
 # OctoTify ARMv7 工作区
 
+> **正式名称：OctoTify ARMv7** —— OctoTify 官方项目的 ARMv7 (linux/arm/v7, 32位) 移植构建。
+> 不另起品牌名：应用与功能完全归属上游 **OctoTify**，本项目只承担「32位 ARM 交叉编译与镜像交付」。
+
 针对 OctoTify 官方不支持 ARMv7 (32位) 的问题，完成全流程交叉编译 + 自定义 Docker 镜像 + ARM 设备部署。
 **详细文档：[DELIVERY-ARMv7.md](./DELIVERY-ARMv7.md)** · 设备端速查：[device-package/DEPLOY-CARD.md](./device-package/DEPLOY-CARD.md)
+
+## 命名规范（全项目统一）
+
+| 对象 | 规范名 | 说明 |
+|---|---|---|
+| 项目名（人读） | **OctoTify ARMv7** | 官方名 + 平台后缀，文档/标题用 |
+| 标识符（机器读） | `octotify-armv7` | kebab-case：git 仓库名 / 镜像名 / 归档前缀 |
+| Docker 镜像 | `octotify-armv7:latest` + `octotify-armv7:v<版本>` | 双标签：latest 供设备流程，版本标签供追溯 |
+| 容器名 | `octotify` | 与官方一致 |
+| 数据卷 | `octotify-data` | 与官方一致 |
+| 镜像归档 | `out/octotify-armv7-v<版本>.tar` | 版本化命名（正式交付物） |
+| 稳定名副本 | `out/octotify-armv7.tar` | 设备端脚本引用的固定名 |
+| 部署包 | `octotify-armv7-deploy.tar.gz` | 稳定名（拷贝到设备的工作文件） |
+| 版本号 | `vMAJOR.MINOR.PATCH`（tag: `v1.0.0-armv7`） | SemVer；基线见 [VERSION](./VERSION) |
+| 分支 | `main`（本工程）· `armv7-fixes`（上游源码补丁） | 补丁可 export 为 patches/ 应用到上游新版 |
 
 ## 目录结构
 
 ```
 ├── build.sh                  # 一键全流程：clone→前端→交叉编译→buildx→导出tar（含全部源码补丁，幂等）
+├── VERSION                   # 版本基线（端口版本 + 上游锚定 commit + 产物指纹）
 ├── DELIVERY-ARMv7.md         # 完整交付文档（可行性核查/编译参数差异/实测记录/设备兼容性/FAQ）
 ├── docker-compose.yml        # 设备端生产编排（持久化+自启+健康检查）
 ├── import-and-run.sh         # 设备端导入+启动

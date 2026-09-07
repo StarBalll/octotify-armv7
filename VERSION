@@ -1,0 +1,14 @@
+# OctoTify ARMv7 版本基线（build.sh 与交付流程引用本文件）
+# 端口版本遵循语义化版本 SemVer：vMAJOR.MINOR.PATCH（-armv7 由 tag 后缀体现）
+PORT_VERSION=1.0.0
+# 对应的上游 OctoTify 基线（本端口由此 commit 源码构建 + patches/ 的4处修复）
+UPSTREAM_BASE=c6d551f
+UPSTREAM_BASE_DATE=2026-07-09
+UPSTREAM_REPO=https://github.com/loommii/OctoTify.git
+UPSTREAM_PATCH_BRANCH=armv7-fixes
+UPSTREAM_PATCH_HEAD=1540e57
+# 目标平台
+TARGET_PLATFORM=linux/arm/v7
+TARGET_GOARM=7
+# 本版本产物指纹（构建后与实际输出核对）
+IMAGE_TAR_SHA256=0b22a16ab8e3a7262b15543efef62a5179ebb863ee293de77e596f2fd51c1960

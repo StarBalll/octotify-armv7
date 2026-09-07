@@ -17,6 +17,11 @@ GO_VERSION="1.26.8"
 TC_VER="2024.05-1"
 TC_DIR="armv7-eabihf--musl--stable-${TC_VER}"
 
+# 版本基线（见 VERSION）：镜像打 latest + v<port> 双标签；tar 以版本号命名，另留稳定名副本
+PORT_VERSION="$(sed -n 's/^PORT_VERSION=//p' "$ROOT/VERSION" | tr -d '[:space:]')"
+UPSTREAM_BASE="$(sed -n 's/^UPSTREAM_BASE=//p' "$ROOT/VERSION" | tr -d '[:space:]')"
+[[ -n "$PORT_VERSION" ]] || { echo "VERSION 文件缺少 PORT_VERSION"; exit 1; }
+
 CLONE=1
 [[ "${1:-}" == "--no-clone" ]] && CLONE=0
 
@@ -276,12 +281,15 @@ cd "$DEPLOY"
 # --provenance/--sbom 关闭：避免 attestation manifest list，老版本 Docker 的 ARM32 设备
 # docker load 兼容性更好
 docker buildx build --platform linux/arm/v7 --provenance=false --sbom=false \
-  -f Dockerfile.armv7 -t octotify-armv7:latest .
-docker save octotify-armv7:latest -o "$OUT/octotify-armv7.tar"
+  -f Dockerfile.armv7 -t octotify-armv7:latest -t "octotify-armv7:v${PORT_VERSION}" .
+docker save octotify-armv7:latest -o "$OUT/octotify-armv7-v${PORT_VERSION}.tar"
+cp "$OUT/octotify-armv7-v${PORT_VERSION}.tar" "$OUT/octotify-armv7.tar"   # 稳定名副本(设备流程引用)
+sha256sum "$OUT/octotify-armv7-v${PORT_VERSION}.tar" | tee "$OUT/octotify-armv7-v${PORT_VERSION}.tar.sha256"
 docker image inspect octotify-armv7:latest --format '镜像架构: {{.Os}}/{{.Architecture}}/{{.Variant}}  大小: {{.Size}}'
 echo
-echo "✅ 完成。交付物："
-echo "   - $OUT/octotify-armv7.tar   （导入 ARM 设备）"
+echo "✅ 完成（OctoTify ARMv7 v${PORT_VERSION}，上游基线 ${UPSTREAM_BASE}）。交付物："
+echo "   - $OUT/octotify-armv7-v${PORT_VERSION}.tar   （镜像归档，版本化命名）"
+echo "   - $OUT/octotify-armv7.tar                    （稳定名副本，设备流程引用）"
 echo "   - $ROOT/docker-compose.yml  （设备端部署文件）"
 echo "   - $ROOT/import-and-run.sh   （设备端导入+启动）"
 echo "   - $ROOT/verify.sh           （部署验证 + curl 推送样例）"
