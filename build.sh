@@ -64,15 +64,22 @@ export PATH="$TOOLS/$TC_DIR/bin:$PATH"
 # musl 工具链优先，因其自带完整 sysroot，静态链接成功率最高。
 
 # ------------------------------------------------------------------------------
-log "[3/7] 拉取官方源码"
+log "[3/7] 拉取官方源码（锚定 VERSION 的 UPSTREAM_BASE，保证可复现构建）"
 # ------------------------------------------------------------------------------
+UPSTREAM_REF="${UPSTREAM_REF:-$UPSTREAM_BASE}"
 if [[ $CLONE -eq 1 ]]; then
   if [[ -d "$REPO/.git" ]]; then
-    git -C "$REPO" fetch origin && git -C "$REPO" reset --hard origin/HEAD
+    git -C "$REPO" fetch origin --tags
   else
-    git clone --depth 1 https://github.com/loommii/OctoTify.git "$REPO"
+    git clone https://github.com/loommii/OctoTify.git "$REPO"
   fi
+  # 本地已有补丁分支也强制回到基线，由后续幂等补丁重放修复
+  git -C "$REPO" checkout -qf "$UPSTREAM_REF" 2>/dev/null || {
+    git -C "$REPO" fetch --unshallow origin 2>/dev/null || git -C "$REPO" fetch origin
+    git -C "$REPO" checkout -qf "$UPSTREAM_REF"
+  }
 fi
+echo "上游基线: $(git -C "$REPO" rev-parse --short HEAD) ($(git -C "$REPO" log -1 --format=%cs HEAD))"
 
 # ------------------------------------------------------------------------------
 log "[4/7] 前端打包（Vue3 + Element Plus，输出 frontend/apps/web-ele/dist）"

@@ -3,8 +3,27 @@
 > **正式名称：OctoTify ARMv7** —— OctoTify 官方项目的 ARMv7 (linux/arm/v7, 32位) 移植构建。
 > 不另起品牌名：应用与功能完全归属上游 **OctoTify**，本项目只承担「32位 ARM 交叉编译与镜像交付」。
 
+## 上游项目与致谢
+
+- **上游官方仓库**：[loommii/OctoTify](https://github.com/loommii/OctoTify) —— 一个轻量自托管通知网关，单 API 广播到多渠道（钉钉/飞书/TG/邮件/Gotify 等）。本项目的全部应用功能、前端 UI 与后端服务均来自该上游，**本仓库不修改任何业务功能**。
+- **本仓库**：[StarBalll/octotify-armv7](https://github.com/StarBalll/octotify-armv7) —— 仅承担「32位 ARM 交叉编译 + Docker 镜像交付 + 设备端部署编排」。
+- 补丁后源码快照：分支 [`octotify-source-armv7-fixes`](https://github.com/StarBalll/octotify-armv7/tree/octotify-source-armv7-fixes)（完整上游历史 + 4 处环境适配修复，见 [patches/](./patches/)）。
+- 若此项目对你有用，请先给上游 [loommii/OctoTify](https://github.com/loommii/OctoTify) 点个 Star ⭐。
+
 针对 OctoTify 官方不支持 ARMv7 (32位) 的问题，完成全流程交叉编译 + 自定义 Docker 镜像 + ARM 设备部署。
 **详细文档：[DELIVERY-ARMv7.md](./DELIVERY-ARMv7.md)** · 设备端速查：[device-package/DEPLOY-CARD.md](./device-package/DEPLOY-CARD.md)
+
+## CI 自动构建（GitHub Actions）
+
+推送 `v*` 标签（如 `v1.1.0-armv7`）即自动：全流程交叉构建（GitHub 云端 x86 runner，无需本地编译机）→ 发布 GitHub Release（附镜像 tar）→ 推送 Docker Hub。手动触发（`workflow_dispatch`）仅构建验证不发布。
+
+启用步骤：
+1. 仓库 Settings → Secrets → Actions 添加：
+   - `DOCKERHUB_USERNAME`：你的 Docker Hub 用户名
+   - `DOCKERHUB_TOKEN`：Docker Hub → Account Settings → Security → New Access Token
+2. 推送标签：`git tag v1.1.0-armv7 && git push origin v1.1.0-armv7`
+3. 产物：GH Release 附件（`octotify-armv7-v*.tar`）+ Docker Hub `<用户名>/octotify-armv7:latest,v<版本>`
+4. 不配置两个 Secret 时仅执行构建验证并发布 Release 附件，跳过 Docker Hub 推送（不报错）。
 
 ## 命名规范（全项目统一）
 
