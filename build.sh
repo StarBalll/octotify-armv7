@@ -23,9 +23,17 @@ UPSTREAM_BASE="$(sed -n 's/^UPSTREAM_BASE=//p' "$ROOT/VERSION" | tr -d '[:space:
 [[ -n "$PORT_VERSION" ]] || { echo "VERSION 文件缺少 PORT_VERSION"; exit 1; }
 
 CLONE=1
-[[ "${1:-}" == "--no-clone" ]] && CLONE=0
+if [[ "${1:-}" == "--no-clone" ]]; then CLONE=0; fi
 
 log() { echo -e "\n\033[1;36m==> $*\033[0m"; }
+
+# CI 可观测性：全量输出镜像到日志文件；任何命令失败时以 ::error:: 注解上报
+# 行号/命令/输出尾部 —— GitHub 会把它作为检查注解暴露（无需登录即可读到）
+LOG_FILE="$ROOT/build-ci.log"
+exec > >(tee "$LOG_FILE") 2>&1
+trap 'rc=$?; \
+  echo "::error::build.sh 失败: 行 ${BASH_LINENO[0]}, 命令: ${BASH_COMMAND}, exit=${rc}"; \
+  echo "::error::输出尾部: $(tail -n 14 "$LOG_FILE" | tr "\n" "|" | cut -c1-850)"' ERR
 
 # ------------------------------------------------------------------------------
 log "[0/7] 环境预检"
