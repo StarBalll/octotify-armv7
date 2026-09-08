@@ -286,7 +286,16 @@ log "[7/7] buildx 构建 linux/arm/v7 镜像并导出 tar"
 cd "$DEPLOY"
 # --provenance/--sbom 关闭：避免 attestation manifest list，老版本 Docker 的 ARM32 设备
 # docker load 兼容性更好
-docker buildx build --platform linux/arm/v7 --provenance=false --sbom=false \
+# --load 仅在非 docker 驱动构建器上需要：CI 的 docker-container 构建器产物默认留在缓存，
+# 不 load 进 docker images 会导致 docker save 报 "No such image"；docker 驱动带该参数会报错
+BUILDER_DRIVER="$(docker buildx inspect 2>/dev/null | awk -F': ' '/^Driver:/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
+if [[ "$BUILDER_DRIVER" == "docker" ]]; then
+  LOAD_FLAG=""
+else
+  LOAD_FLAG="--load"
+  echo "构建器驱动: $BUILDER_DRIVER → 使用 --load 导回 docker images"
+fi
+docker buildx build --platform linux/arm/v7 --provenance=false --sbom=false $LOAD_FLAG \
   -f Dockerfile.armv7 -t octotify-armv7:latest -t "octotify-armv7:v${PORT_VERSION}" .
 docker save octotify-armv7:latest -o "$OUT/octotify-armv7-v${PORT_VERSION}.tar"
 cp "$OUT/octotify-armv7-v${PORT_VERSION}.tar" "$OUT/octotify-armv7.tar"   # 稳定名副本(设备流程引用)
