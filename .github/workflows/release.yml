@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
