@@ -73,6 +73,44 @@ cp out/octotify-armv7.tar device-package/ && tar -czf octotify-armv7-deploy.tar.
 docker load -i octotify-armv7.tar && docker compose up -d
 ```
 
+## 发送消息（核心用法）
+
+部署完成后，任意项目只需一次 HTTP 请求即可把消息广播到所有已绑定渠道。
+
+### 1. 获取推送令牌
+
+登录 WebUI（`http://<设备IP>:5233`）：
+
+- **来源管理 → 新建来源**：创建成功页直接显示推送令牌（本工程的补丁已修复官方"创建后令牌不可见"的问题）；
+- 或 **来源管理 → 已有来源 → 查看令牌**：输入登录密码二次验证后查看。
+
+令牌格式如 `src01xxxx...`，**创建时只显示一次，请保存**。在来源上绑定要广播的渠道（钉钉/飞书/TG/邮件/Gotify 等，先在渠道管理里建好）。
+
+### 2. 发送（curl）
+
+```bash
+curl -X POST "http://<设备IP>:5233/api/push/<推送令牌>" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"构建完成","message":"octotify-armv7 v1.0.0 已发布，请查看 Release"}'
+```
+
+- `title` / `message` 均为字符串；响应 JSON 含**各渠道逐一投递的 results**（单渠道故障不影响其他渠道）。
+- 同一来源绑定多个渠道时，一次调用即全部广播。
+
+### 3. 集成到脚本（示例：CI 发布后通知 / 定时备份通知）
+
+```bash
+# 简单封装成函数，脚本里随处可用
+notify() {
+  curl -sf -X POST "http://<设备IP>:5233/api/push/<推送令牌>" \
+    -H 'Content-Type: application/json' \
+    -d "$(printf '{"title":"%s","message":"%s"}' "$1" "$2")" >/dev/null
+}
+notify "夜间备份" "/data 备份完成, 大小 3.2G"
+```
+
+完整端到端验证（注册→登录→建来源→推送）可直接跑仓库里的 `verify.sh`；其他可用字段与渠道类型见 `GET /api/channel-types`。
+
 ## 上游源码修改（4 处，均为 armv7/局域网 HTTP 场景必需）
 
 | # | 文件 | 问题 |
