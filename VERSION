@@ -14,4 +14,4 @@ TARGET_GOARM=7
 # 本版本发布产物指纹（= 该版本 Release 附件 tar 的 SHA256；docker save 含构建时间戳，
 # 重新构建的 tar 哈希必然不同——可复现性指"源码/补丁/依赖锚定"，见 README FAQ）
 # v1.1.0 起未重新导出镜像前此值为空，构建后由 out/*.tar.sha256 回填
-IMAGE_TAR_SHA256=d581916fd2ba66799adac12b83f67f4f60f3a76c1b789a23a6ae8d39054c22f3
+IMAGE_TAR_SHA256=e02299a362788506c53daf84c6892d3b22e9802a43124866251b61589770cc9f

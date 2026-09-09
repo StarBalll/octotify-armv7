@@ -1,0 +1,763 @@
+From 40684471455f8a08f223573c4e94da26f29ba045 Mon Sep 17 00:00:00 2001
+From: OctoTify ARMv7 Builder <builder@armv7.local>
+Date: Thu, 10 Sep 2026 00:32:08 +0800
+Subject: [PATCH] =?UTF-8?q?feat(channels):=20=E8=87=AA=E5=AE=9A=E4=B9=89?=
+ =?UTF-8?q?=20Webhook=20=E6=B8=A0=E9=81=93=E2=80=94=E2=80=94=E6=A8=A1?=
+ =?UTF-8?q?=E6=9D=BF=E5=8C=96=20HTTP=20=E6=8E=A8=E9=80=81?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+原 webhook sender 为未实现占位（Send 恒返回"尚未实现"）。本次完整实现：
+
+后端 sender/webhook.go:
+- 配置: url(必填)/method(POST|PUT|PATCH|GET，默认 POST)/
+  content_type(application/json 默认|x-www-form-urlencoded|text/plain)/
+  headers/body_template/timeout_sec(默认30,1-120)
+- 请求体模板支持 {{title}}/{{content}}/{{timestamp}} 占位符，
+  值按内容类型自动转义：JSON 内层转义(引号/换行安全)、form URL 转义、
+  text 原样；单趟替换避免值内含占位符字面量导致二次替换；
+  JSON 模式渲染后校验合法性
+- headers 支持两种写法：JSON 对象，或每行一个 "Key: Value"
+  （兼容全角冒号）；日志仅记 host 与头名，不记 URL 查询串与头的值
+- GET 方法占位符走查询串；非 2xx 视为失败并返回状态码+响应摘要；
+  响应体最多读 64KB 用于诊断
+
+注册:
+- dto 补全 webhook 类型元数据（Name「自定义 Webhook」，
+  新增 textarea 字段类型），ValidChannelTypes 原本已含 webhook
+- channel create/edit 表单支持 textarea 类型字段（模板/请求头多行输入）
+
+测试: webhook_test.go 全量重写（默认模板转义还原、自定义模板+
+请求头、行式/全角冒号头、form URL 转义、text 原样、PUT、
+非法方法/类型/模板、HTTP500、超时收敛），13 用例全部通过。
+---
+ backend/internal/handler/dto/channel_dto.go   |  49 +++
+ backend/internal/sender/webhook.go            | 290 +++++++++++++++++-
+ backend/internal/sender/webhook_test.go       | 269 ++++++++++++++--
+ .../apps/web-ele/src/views/channel/create.vue |   8 +
+ .../apps/web-ele/src/views/channel/edit.vue   |   8 +
+ 5 files changed, 595 insertions(+), 29 deletions(-)
+
+diff --git a/backend/internal/handler/dto/channel_dto.go b/backend/internal/handler/dto/channel_dto.go
+index 58b424e..95b9ade 100644
+--- a/backend/internal/handler/dto/channel_dto.go
++++ b/backend/internal/handler/dto/channel_dto.go
+@@ -257,6 +257,55 @@ var ChannelTypeMetas = []ChannelTypeMeta{
+ 			},
+ 		},
+ 	},
++	{
++		Type:        ChannelTypeWebhook,
++		Name:        "自定义 Webhook",
++		Description: "通用 HTTP 推送：URL/方法/请求头/请求体模板均可自定义，占位符 {{title}}、{{content}}、{{timestamp}} 按内容类型自动转义",
++		ConfigFields: []ConfigField{
++			{
++				Name:        "url",
++				Label:       "目标地址",
++				Type:        "url",
++				Required:    true,
++				Placeholder: "https://example.com/hook 或 http://192.168.1.10:8080/notify",
++			},
++			{
++				Name:        "method",
++				Label:       "请求方法",
++				Type:        "string",
++				Required:    false,
++				Placeholder: "POST（默认，可选 PUT/PATCH/GET）",
++			},
++			{
++				Name:        "content_type",
++				Label:       "内容类型",
++				Type:        "string",
++				Required:    false,
++				Placeholder: "application/json（默认，可选 x-www-form-urlencoded / text/plain）",
++			},
++			{
++				Name:        "body_template",
++				Label:       "请求体模板（可选）",
++				Type:        "textarea",
++				Required:    false,
++				Placeholder: `{"title":"{{title}}","content":"{{content}}","ts":{{timestamp}}}；留空按内容类型使用默认模板；{{timestamp}} 为 Unix 秒（数字，不要加引号）`,
++			},
++			{
++				Name:        "headers",
++				Label:       "自定义请求头（可选）",
++				Type:        "textarea",
++				Required:    false,
++				Placeholder: `JSON 对象，如 {"Authorization":"Bearer xxx"}；或每行一个：Authorization: Bearer xxx`,
++			},
++			{
++				Name:        "timeout_sec",
++				Label:       "超时秒数（可选）",
++				Type:        "number",
++				Required:    false,
++				Placeholder: "30（1-120）",
++			},
++		},
++	},
+ }
+ 
+ // CreateChannelReq 创建推送渠道请求
+diff --git a/backend/internal/sender/webhook.go b/backend/internal/sender/webhook.go
+index a0a1e1d..2086083 100644
+--- a/backend/internal/sender/webhook.go
++++ b/backend/internal/sender/webhook.go
+@@ -1,14 +1,28 @@
+ package sender
+ 
+ import (
++	"bytes"
+ 	"context"
++	"encoding/json"
+ 	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"strconv"
++	"strings"
++	"time"
+ 
+ 	"go.uber.org/zap"
+ 	"gorm.io/datatypes"
+ )
+ 
+-// WebhookSender Webhook 消息发送器
++// WebhookSender 自定义 Webhook 消息发送器。
++//
++// 面向"标题 + 内容"两类消息的通用 HTTP 推送渠道：
++//   - 请求体支持 {{title}} / {{content}} / {{timestamp}} 占位符模板，
++//     值按 content_type 自动转义（JSON 内引号/换行安全，form 内 URL 转义）
++//   - 支持 POST/PUT/PATCH（带请求体）与 GET（占位符拼入查询串）
++//   - 支持自定义请求头（如 Authorization）
+ type WebhookSender struct {
+ 	logger *zap.Logger
+ }
+@@ -18,9 +32,275 @@ func NewWebhookSender(logger *zap.Logger) *WebhookSender {
+ 	return &WebhookSender{logger: logger}
+ }
+ 
+-// Send 发送 Webhook 消息
++type webhookConfig struct {
++	URL          string         `json:"url"`           // 目标地址（必填）
++	Method       string         `json:"method"`        // POST/PUT/PATCH/GET，默认 POST
++	ContentType  string         `json:"content_type"`  // application/json(默认)/application/x-www-form-urlencoded/text/plain
++	Headers      webhookHeaders `json:"headers"`       // 自定义请求头：JSON 对象或 "Key: Value" 每行一个
++	BodyTemplate string         `json:"body_template"` // 请求体模板，空则按 content_type 使用默认模板
++	TimeoutSec   int            `json:"timeout_sec"`   // 请求超时秒数，默认 30，范围 1-120
++}
++
++// webhookHeaders 灵活解析请求头配置：
++//  1. JSON 对象：{"Authorization":"Bearer xxx","X-Source":"octotify"}
++//  2. 字符串（每行一个，冒号支持中英文）：
++//     Authorization: Bearer xxx
++//     X-Source: octotify
++type webhookHeaders map[string]string
++
++func (h *webhookHeaders) UnmarshalJSON(b []byte) error {
++	trimmed := strings.TrimSpace(string(b))
++	*h = webhookHeaders{}
++	if trimmed == "" || trimmed == "null" {
++		return nil
++	}
++	// 形式 1：JSON 对象
++	if trimmed[0] == '{' {
++		var obj map[string]string
++		if err := json.Unmarshal(b, &obj); err != nil {
++			return fmt.Errorf("headers 应为 JSON 对象或每行一个 \"Key: Value\": %w", err)
++		}
++		for k, v := range obj {
++			(*h)[strings.TrimSpace(k)] = strings.TrimSpace(v)
++		}
++		return nil
++	}
++	// 形式 2：字符串，按行解析 "Key: Value"
++	var s string
++	if err := json.Unmarshal(b, &s); err != nil {
++		return fmt.Errorf("headers 应为 JSON 对象或每行一个 \"Key: Value\": %w", err)
++	}
++	for _, line := range strings.Split(s, "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" {
++			continue
++		}
++		sep := strings.IndexAny(line, ":\uFF1A") // 半角/全角冒号
++		if sep <= 0 {
++			return fmt.Errorf("请求头行格式错误（应为 Key: Value）: %s", line)
++		}
++		key := strings.TrimSpace(line[:sep])
++		val := strings.TrimSpace(line[sep+utf8len(line[sep]):])
++		(*h)[key] = val
++	}
++	return nil
++}
++
++// utf8len 返回 UTF-8 编码下首字节 rune 的字节长度（用于跳过全角冒号等多字节字符）
++func utf8len(b byte) int {
++	switch {
++	case b < 0x80:
++		return 1
++	case b < 0xE0:
++		return 2
++	case b < 0xF0:
++		return 3
++	default:
++		return 4
++	}
++}
++
++type webhookTemplateData struct {
++	Title     string
++	Content   string
++	Timestamp int64 // Unix 秒
++}
++
++const (
++	webhookHTTPTimeout = 30 * time.Second
++	webhookRespLimit   = 64 << 10 // 响应体最多读取 64KB（仅用于错误诊断）
++)
++
++var webhookAllowedMethods = map[string]bool{
++	http.MethodPost: true, http.MethodPut: true, http.MethodPatch: true, http.MethodGet: true,
++}
++
+ func (s *WebhookSender) Send(ctx context.Context, config datatypes.JSON, title string, content string) error {
+-	// TODO: 实现 Webhook 推送逻辑
+-	s.logger.Warn("Webhook 渠道尚未实现")
+-	return fmt.Errorf("渠道 webhook 尚未实现")
++	var cfg webhookConfig
++	if err := json.Unmarshal(config, &cfg); err != nil {
++		return fmt.Errorf("解析 Webhook 渠道配置失败: %w", err)
++	}
++
++	// ---- 配置规范化与校验 ----
++	if strings.TrimSpace(cfg.URL) == "" {
++		return fmt.Errorf("Webhook 目标地址不能为空")
++	}
++	method := strings.ToUpper(strings.TrimSpace(cfg.Method))
++	if method == "" {
++		method = http.MethodPost
++	}
++	if !webhookAllowedMethods[method] {
++		return fmt.Errorf("不支持的请求方法: %s（仅 POST/PUT/PATCH/GET）", cfg.Method)
++	}
++	contentType := strings.TrimSpace(cfg.ContentType)
++	if contentType == "" {
++		contentType = "application/json"
++	}
++	if contentType != "application/json" && contentType != "application/x-www-form-urlencoded" && contentType != "text/plain" {
++		return fmt.Errorf("不支持的 Content-Type: %s（仅 application/json / application/x-www-form-urlencoded / text/plain）", cfg.ContentType)
++	}
++	timeout := webhookHTTPTimeout
++	if cfg.TimeoutSec > 0 {
++		if cfg.TimeoutSec > 120 {
++			cfg.TimeoutSec = 120
++		}
++		timeout = time.Duration(cfg.TimeoutSec) * time.Second
++	}
++
++	// 目标地址校验（允许 http/https；不强制 https 以兼容内网自建服务）
++	target := strings.TrimSpace(cfg.URL)
++	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
++		target = "https://" + target
++	}
++	parsedURL, err := url.Parse(target)
++	if err != nil || parsedURL.Host == "" {
++		return fmt.Errorf("Webhook 目标地址格式错误")
++	}
++
++	data := webhookTemplateData{
++		Title:     title,
++		Content:   content,
++		Timestamp: time.Now().Unix(),
++	}
++
++	// ---- 组装请求 ----
++	var req *http.Request
++	if method == http.MethodGet {
++		// GET：占位符以查询串传递，忽略请求体
++		q := parsedURL.Query()
++		q.Set("title", data.Title)
++		q.Set("content", data.Content)
++		parsedURL.RawQuery = q.Encode()
++		req, err = http.NewRequestWithContext(ctx, method, parsedURL.String(), nil)
++	} else {
++		body, ct, berr := webhookRenderBody(cfg, contentType, data)
++		if berr != nil {
++			return berr
++		}
++		req, err = http.NewRequestWithContext(ctx, method, parsedURL.String(), bytes.NewReader(body))
++		if err == nil {
++			// 用户未在自定义头里指定 Content-Type 时使用模板对应的默认值
++			if _, exists := cfg.Headers["Content-Type"]; !exists {
++				req.Header.Set("Content-Type", ct)
++			}
++		}
++	}
++	if err != nil {
++		return fmt.Errorf("创建 HTTP 请求失败: %w", err)
++	}
++
++	// 自定义请求头
++	for k, v := range cfg.Headers {
++		if strings.EqualFold(k, "Host") { // Host 不可通过 Header 设置
++			continue
++		}
++		req.Header.Set(k, v)
++	}
++
++	// 日志脱敏：仅记录 host 与自定义头名称，不记录完整 URL（可能内嵌 token）与头的值
++	headerNames := make([]string, 0, len(cfg.Headers))
++	for k := range cfg.Headers {
++		headerNames = append(headerNames, k)
++	}
++	s.logger.Debug("Webhook 渠道配置",
++		zap.String("host", parsedURL.Host),
++		zap.String("method", method),
++		zap.Strings("custom_headers", headerNames),
++	)
++
++	client := &http.Client{Timeout: timeout}
++	resp, err := client.Do(req)
++	if err != nil {
++		s.logger.Error("Webhook 网络请求失败",
++			zap.String("host", parsedURL.Host),
++			zap.Error(err),
++		)
++		return fmt.Errorf("发送 Webhook 请求失败: %w", err)
++	}
++	defer resp.Body.Close()
++
++	respBody, err := io.ReadAll(io.LimitReader(resp.Body, webhookRespLimit))
++	if err != nil {
++		return fmt.Errorf("读取 Webhook 响应失败: %w", err)
++	}
++
++	if resp.StatusCode < 200 || resp.StatusCode > 299 {
++		s.logger.Error("Webhook 返回非 2xx 响应",
++			zap.String("host", parsedURL.Host),
++			zap.Int("http_status", resp.StatusCode),
++			zap.ByteString("body_snippet", respBody),
++		)
++		return fmt.Errorf("Webhook 返回 HTTP 错误: %d, body: %s", resp.StatusCode, truncateMessage(string(respBody), 512, "\n[响应已截断]"))
++	}
++
++	s.logger.Info("Webhook 推送成功",
++		zap.String("host", parsedURL.Host),
++		zap.Int("http_status", resp.StatusCode),
++	)
++	return nil
++}
++
++// webhookRenderBody 按内容类型渲染请求体。
++// 返回 (请求体字节, Content-Type, 错误)。
++func webhookRenderBody(cfg webhookConfig, contentType string, data webhookTemplateData) ([]byte, string, error) {
++	switch contentType {
++	case "application/json":
++		tpl := cfg.BodyTemplate
++		if strings.TrimSpace(tpl) == "" {
++			tpl = `{"title":"{{title}}","content":"{{content}}"}`
++		}
++		// JSON 模式：占位符位于字符串字面量内，仅做 JSON 内层转义（引号由模板提供）
++		body := webhookReplace(tpl,
++			webhookJSONInner(data.Title),
++			webhookJSONInner(data.Content),
++			strconv.FormatInt(data.Timestamp, 10),
++		)
++		if !json.Valid([]byte(body)) {
++			return nil, "", fmt.Errorf("渲染后的请求体不是合法 JSON，请检查 body_template（提示：占位符值会自动转义，但需自行保证模板结构合法）")
++		}
++		return []byte(body), "application/json", nil
++
++	case "application/x-www-form-urlencoded":
++		tpl := cfg.BodyTemplate
++		if strings.TrimSpace(tpl) == "" {
++			tpl = `title={{title}}&content={{content}}`
++		}
++		body := webhookReplace(tpl, url.QueryEscape(data.Title), url.QueryEscape(data.Content), strconv.FormatInt(data.Timestamp, 10))
++		return []byte(body), "application/x-www-form-urlencoded", nil
++
++	default: // text/plain
++		tpl := cfg.BodyTemplate
++		if strings.TrimSpace(tpl) == "" {
++			tpl = "{{title}}\n\n{{content}}"
++		}
++		body := webhookReplace(tpl, data.Title, data.Content, strconv.FormatInt(data.Timestamp, 10))
++		return []byte(body), "text/plain", nil
++	}
++}
++
++// webhookReplace 单趟替换全部占位符（避免 content 内含 {{title}} 字面量导致二次替换）
++func webhookReplace(tpl, titleEscaped, contentEscaped, timestamp string) string {
++	return strings.NewReplacer(
++		"{{content}}", contentEscaped,
++		"{{title}}", titleEscaped,
++		"{{timestamp}}", timestamp,
++		"{{ title }}", titleEscaped,
++		"{{ content }}", contentEscaped,
++		"{{ timestamp }}", timestamp,
++	).Replace(tpl)
++}
++
++// webhookJSONInner 产出 JSON 字符串的内层转义文本（不含两侧引号）。
++// 模板中写作 "key":"{{title}}"，引号由模板提供。
++func webhookJSONInner(s string) string {
++	b, err := json.Marshal(s)
++	if err != nil {
++		return ""
++	}
++	out := string(b)
++	// json.Marshal 结果恒为 "..." 形式
++	if len(out) >= 2 && out[0] == '"' && out[len(out)-1] == '"' {
++		out = out[1 : len(out)-1]
++	}
++	return out
+ }
+diff --git a/backend/internal/sender/webhook_test.go b/backend/internal/sender/webhook_test.go
+index 87d4e50..97202a2 100644
+--- a/backend/internal/sender/webhook_test.go
++++ b/backend/internal/sender/webhook_test.go
+@@ -2,6 +2,10 @@ package sender
+ 
+ import (
+ 	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
+ 	"strings"
+ 	"testing"
+ 
+@@ -22,50 +26,267 @@ func TestWebhookSender_NewInstance(t *testing.T) {
+ 	}
+ }
+ 
+-// TestWebhookSender_Send 测试Webhook发送器Send方法返回未实现错误
+ func TestWebhookSender_Send(t *testing.T) {
+-	logger := zaptest.NewLogger(t)
+-	sender := NewWebhookSender(logger)
+-
+ 	tests := []struct {
+ 		name        string
+ 		config      datatypes.JSON
+ 		title       string
+ 		content     string
++		handler     http.HandlerFunc
++		wantErr     bool
+ 		errContains string
++		verify      func(t *testing.T, r *http.Request, body string)
+ 	}{
+ 		{
+-			name:        "空配置应返回未实现错误",
+-			config:      nil,
+-			title:       "",
+-			content:     "",
+-			errContains: "尚未实现",
++			name:    "成功_默认JSON模板",
++			config:  datatypes.JSON(`{"url":"http://example.com/hook"}`),
++			title:   "构建通知",
++			content: "第一行\n第二行 \"引号\" 与 \\ 反斜杠",
++			handler: func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(http.StatusOK)
++			},
++			verify: func(t *testing.T, r *http.Request, body string) {
++				if r.Method != http.MethodPost {
++					t.Errorf("方法应为 POST，got %s", r.Method)
++				}
++				if ct := r.Header.Get("Content-Type"); ct != "application/json" {
++					t.Errorf("Content-Type 应为 application/json，got %s", ct)
++				}
++				if !json.Valid([]byte(body)) {
++					t.Fatalf("请求体应为合法 JSON: %s", body)
++				}
++				var m map[string]any
++				if err := json.Unmarshal([]byte(body), &m); err != nil {
++					t.Fatalf("解析请求体失败: %v", err)
++				}
++				if m["title"] != "构建通知" {
++					t.Errorf("title 不匹配: %v", m["title"])
++				}
++				want := "第一行\n第二行 \"引号\" 与 \\ 反斜杠"
++				if m["content"] != want {
++					t.Errorf("content 应转义后完整还原:\n want %q\n got  %q", want, m["content"])
++				}
++			},
++		},
++		{
++			name: "成功_自定义模板与请求头",
++			config: datatypes.JSON(`{
++				"url": "http://example.com/hook",
++				"headers": {"Authorization": "Bearer tok-1", "X-Source": "octotify"},
++				"body_template": "{\"text\":\"[{{title}}] {{content}}\",\"ts\":{{timestamp}}}"
++			}`),
++			title:   "告警",
++			content: "CPU 90%",
++			handler: func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(http.StatusOK)
++			},
++			verify: func(t *testing.T, r *http.Request, body string) {
++				if r.Header.Get("Authorization") != "Bearer tok-1" {
++					t.Errorf("Authorization 头缺失或不匹配: %q", r.Header.Get("Authorization"))
++				}
++				if r.Header.Get("X-Source") != "octotify" {
++					t.Errorf("X-Source 头缺失: %q", r.Header.Get("X-Source"))
++				}
++				if !strings.Contains(body, `"text":"[告警] CPU 90%"`) {
++					t.Errorf("模板渲染结果不符: %s", body)
++				}
++				if !strings.Contains(body, `"ts":`) {
++					t.Errorf("timestamp 占位符未替换: %s", body)
++				}
++			},
++		},
++		{
++			name: "成功_行式请求头_全角冒号",
++			config: datatypes.JSON(`{
++				"url": "http://example.com/hook",
++				"headers": "Authorization: Bearer abc\nX-Token：xyz"
++			}`),
++			title:   "t",
++			content: "c",
++			handler: func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(http.StatusOK)
++			},
++			verify: func(t *testing.T, r *http.Request, body string) {
++				if r.Header.Get("Authorization") != "Bearer abc" {
++					t.Errorf("行式请求头解析失败: %q", r.Header.Get("Authorization"))
++				}
++				if r.Header.Get("X-Token") != "xyz" {
++					t.Errorf("全角冒号解析失败: %q", r.Header.Get("X-Token"))
++				}
++			},
++		},
++		{
++			name: "成功_form类型_URL转义",
++			config: datatypes.JSON(`{
++				"url": "http://example.com/hook",
++				"content_type": "application/x-www-form-urlencoded"
++			}`),
++			title:   "a&b=c",
++			content: "中文 值 + 空格",
++			handler: func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(http.StatusOK)
++			},
++			verify: func(t *testing.T, r *http.Request, body string) {
++				if ct := r.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
++					t.Errorf("Content-Type 不符: %s", ct)
++				}
++				if !strings.Contains(body, "title=a%26b%3Dc") {
++					t.Errorf("title 未做 URL 转义: %s", body)
++				}
++				if !strings.Contains(body, "content=") {
++					t.Errorf("content 缺失: %s", body)
++				}
++			},
++		},
++		{
++			name: "成功_text类型_原样替换",
++			config: datatypes.JSON(`{
++				"url": "http://example.com/hook",
++				"content_type": "text/plain",
++				"body_template": "{{title}}\n====\n{{content}}"
++			}`),
++			title:   "标题",
++			content: "内容<特殊>字符不转义",
++			handler: func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(http.StatusOK)
++			},
++			verify: func(t *testing.T, r *http.Request, body string) {
++				if !strings.Contains(body, "标题\n====\n内容<特殊>字符不转义") {
++					t.Errorf("text 模板应原样替换: %q", body)
++				}
++			},
++		},
++		{
++			name:    "成功_PUT方法",
++			config:  datatypes.JSON(`{"url":"http://example.com/hook","method":"put"}`),
++			title:   "t",
++			content: "c",
++			handler: func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(http.StatusOK)
++			},
++			verify: func(t *testing.T, r *http.Request, _ string) {
++				if r.Method != http.MethodPut {
++					t.Errorf("方法应为 PUT，got %s", r.Method)
++				}
++			},
++		},
++		{
++			name:    "失败_缺url",
++			config:  datatypes.JSON(`{}`),
++			title:   "t",
++			content: "c",
++			handler: nil,
++			wantErr: true,
++		},
++		{
++			name:        "失败_非法方法",
++			config:      datatypes.JSON(`{"url":"http://example.com","method":"DELETE"}`),
++			title:       "t",
++			content:     "c",
++			handler:     nil,
++			wantErr:     true,
++			errContains: "不支持的请求方法",
++		},
++		{
++			name:        "失败_非法content_type",
++			config:      datatypes.JSON(`{"url":"http://example.com","content_type":"text/html"}`),
++			title:       "t",
++			content:     "c",
++			handler:     nil,
++			wantErr:     true,
++			errContains: "不支持的 Content-Type",
++		},
++		{
++			name:        "失败_模板渲染后非法JSON",
++			config:      datatypes.JSON(`{"url":"http://example.com","body_template":"{not-json {{title}}"}`),
++			title:       "t",
++			content:     "c",
++			handler:     nil,
++			wantErr:     true,
++			errContains: "合法 JSON",
++		},
++		{
++			name:        "失败_行式请求头缺冒号",
++			config:      datatypes.JSON(`{"url":"http://example.com","headers":"无效行没有冒号"}`),
++			title:       "t",
++			content:     "c",
++			handler:     nil,
++			wantErr:     true,
++			errContains: "Key: Value",
+ 		},
+ 		{
+-			name:        "有效配置应返回未实现错误",
+-			config:      datatypes.JSON(`{"url":"https://example.com/webhook"}`),
+-			title:       "test title",
+-			content:     "test content",
+-			errContains: "尚未实现",
++			name:    "失败_HTTP500",
++			config:  datatypes.JSON(`{"url":"http://example.com/hook"}`),
++			title:   "t",
++			content: "c",
++			handler: func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(http.StatusInternalServerError)
++				w.Write([]byte("server exploded"))
++			},
++			wantErr:     true,
++			errContains: "500",
+ 		},
+ 		{
+-			name:        "任意输入应返回未实现错误",
+-			config:      datatypes.JSON(`{}`),
+-			title:       "通知",
+-			content:     "这是一条测试消息",
+-			errContains: "尚未实现",
++			name:    "失败_配置非法JSON",
++			config:  datatypes.JSON(`{invalid}`),
++			title:   "t",
++			content: "c",
++			handler: nil,
++			wantErr: true,
+ 		},
+ 	}
+ 
+ 	for _, tt := range tests {
+ 		t.Run(tt.name, func(t *testing.T) {
+-			err := sender.Send(context.Background(), tt.config, tt.title, tt.content)
+-			if err == nil {
+-				t.Fatalf("WebhookSender.Send() expected error, got nil")
++			var gotReq *http.Request
++			var gotBody string
++			var srv *httptest.Server
++			cfg := tt.config
++
++			if tt.handler != nil {
++				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					b, _ := io.ReadAll(r.Body)
++					gotReq = r
++					gotBody = string(b)
++					tt.handler(w, r)
++				}))
++				defer srv.Close()
++				// 将模板里的 example.com 替换为测试服务器地址
++				cfg = datatypes.JSON(strings.ReplaceAll(string(tt.config), "http://example.com", srv.URL))
+ 			}
+-			if !strings.Contains(err.Error(), tt.errContains) {
+-				t.Errorf("WebhookSender.Send() error = %q, want containing %q", err.Error(), tt.errContains)
++
++			s := NewWebhookSender(zaptest.NewLogger(t))
++			err := s.Send(context.Background(), cfg, tt.title, tt.content)
++
++			if tt.wantErr {
++				if err == nil {
++					t.Fatal("期望返回错误，实际为 nil")
++				}
++				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
++					t.Fatalf("错误信息应包含 %q，got: %v", tt.errContains, err)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatalf("不期望的错误: %v", err)
++			}
++			if tt.verify != nil {
++				tt.verify(t, gotReq, gotBody)
+ 			}
+ 		})
+ 	}
+ }
++
++func TestWebhookSender_TimeoutClamp(t *testing.T) {
++	// timeout_sec 超上限应被收敛到 120 且不影响正常发送
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusOK)
++	}))
++	defer srv.Close()
++
++	s := NewWebhookSender(zaptest.NewLogger(t))
++	cfg := datatypes.JSON(`{"url":"` + srv.URL + `","timeout_sec":99999}`)
++	if err := s.Send(context.Background(), cfg, "t", "c"); err != nil {
++		t.Fatalf("超时收敛后应发送成功: %v", err)
++	}
++}
+diff --git a/frontend/apps/web-ele/src/views/channel/create.vue b/frontend/apps/web-ele/src/views/channel/create.vue
+index ce9b6a8..dae813a 100644
+--- a/frontend/apps/web-ele/src/views/channel/create.vue
++++ b/frontend/apps/web-ele/src/views/channel/create.vue
+@@ -91,6 +91,14 @@
+               :placeholder="field.placeholder"
+               style="width: 100%"
+             />
++            <!-- 多行文本类型（如自定义 Webhook 的请求体模板/请求头） -->
++            <ElInput
++              v-else-if="field.type === 'textarea'"
++              v-model="configData[field.name]"
++              type="textarea"
++              :rows="4"
++              :placeholder="field.placeholder"
++            />
+             <!-- 默认文本类型 -->
+             <ElInput
+               v-else
+diff --git a/frontend/apps/web-ele/src/views/channel/edit.vue b/frontend/apps/web-ele/src/views/channel/edit.vue
+index fc522a4..6174cc7 100644
+--- a/frontend/apps/web-ele/src/views/channel/edit.vue
++++ b/frontend/apps/web-ele/src/views/channel/edit.vue
+@@ -65,6 +65,14 @@
+               :placeholder="field.placeholder"
+               style="width: 100%"
+             />
++            <!-- 多行文本类型（如自定义 Webhook 的请求体模板/请求头） -->
++            <ElInput
++              v-else-if="field.type === 'textarea'"
++              v-model="configData[field.name]"
++              type="textarea"
++              :rows="4"
++              :placeholder="field.placeholder"
++            />
+             <!-- 默认文本类型 -->
+             <ElInput
+               v-else
+-- 
+2.43.0
+
