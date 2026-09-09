@@ -131,12 +131,13 @@ notify "夜间备份" "/data 备份完成, 大小 3.2G"
 | `web-ele/package.json` + `pnpm-lock.yaml` | 新增依赖 `marked@^18.0.12`、`dompurify@^3.4.15`（锁文件净 +17 行，frozen 安装验证通过） |
 | locale `page.json` ×2 | 新增 `page.message.viewRendered` / `viewSource` 文案 |
 
-### 缺陷修复（0003，概览消息表格 + 跳转）
+### 缺陷修复（0003 + 0004，概览/消息列表表格与跳转）
 
 | 文件 | 内容 |
 |---|---|
-| 后端 `dto.MessageDTO` + `message_service.go` | 消息列表/筛选接口补齐 `source_name`/`channel_name`/`channel_type`（原只回 ID，UI 表格来源名称/渠道名称列恒为空）；批量 IN 去重填充，避免 N+1 |
-| 前端 `dashboard/index.vue` | 修复点击消息标题仅弹提示无法跳转——改为 `router.push('/message/detail/<id>')`，整行可点击；列名/空态/错误文案接入 i18n |
-| e2e `B-dashboard.spec.ts` | B-55 用例由「toast 非导航」改为「跳转详情页」断言 |
+| 后端 `dto.MessageDTO` + `message_service.go`（0003） | 消息列表/筛选接口补齐 `source_name`/`channel_name`/`channel_type`（原只回 ID，UI 表格来源名称/渠道名称列恒为空）；批量 IN 去重填充，避免 N+1 |
+| 前端 `dashboard/index.vue`（0003） | 修复点击消息标题仅弹提示无法跳转——改为 `router.push('/message/detail/<id>')`，整行可点击；列名/空态/错误文案接入 i18n |
+| 前端 `message/list.vue`（0004） | 修复表头渲染出原始键名 `dashboard.messageTitle` 等——i18n 键误用缺 `page.` 前缀，修正为 `page.dashboard.*`；来源/渠道名称列补 `--` 空值占位 |
+| e2e `B-dashboard.spec.ts`（0003） | B-55 用例由「toast 非导航」改为「跳转详情页」断言 |
 
 构建参数关键差异（详见交付文档）：去 `-tags=sonic`（不支持32位）、musl 交叉工具链、`VITE_GLOB_API_URL=/`。

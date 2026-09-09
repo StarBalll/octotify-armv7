@@ -122,6 +122,16 @@ elif grep -q "fillSourceAndChannelNames" "$REPO/backend/internal/service/message
 else
   echo "::error::patches/0003 既无法应用也不在源码中（上游基线可能已变更）"; exit 1
 fi
+# 关键点 2d：重放 patches/0004 —— 消息列表表头 i18n 键修正（幂等）。
+#           纯前端视图变更（dashboard.* → page.dashboard.*），无依赖变更。
+if git -C "$REPO" apply --check "$ROOT/patches/0004-fix-message-list-header-i18n.patch" 2>/dev/null; then
+  git -C "$REPO" apply "$ROOT/patches/0004-fix-message-list-header-i18n.patch"
+  log "已重放 patches/0004（消息列表表头 i18n 修正）"
+elif grep -q "t('page.dashboard.messageTitle')" "$REPO/frontend/apps/web-ele/src/views/message/list.vue" 2>/dev/null; then
+  log "patches/0004 已在源码中，跳过重放"
+else
+  echo "::error::patches/0004 既无法应用也不在源码中（上游基线可能已变更）"; exit 1
+fi
 # 关键点 3：来源详情页"查看令牌"通过密码二次验证后仍显示脱敏星号（showTokenPlainText
 #           被置 false），用户看不到完整 token——改为验证后直接显示明文（幂等）。
 python3 - "$REPO/frontend/apps/web-ele/src/views/source/detail.vue" <<'PYEOF2'
