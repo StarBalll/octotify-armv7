@@ -146,6 +146,8 @@ curl -X POST http://127.0.0.1:5233/api/push/<推送token> \
 
 **功能增强（patches/0002，不改变推送协议）**：消息详情 WebUI 正文支持 Markdown（GFM）与 HTML 安全渲染——marked 解析 + DOMPurify 净化（禁 iframe/object/embed/form/base/meta，链接强制 `_blank`+`noopener`），正文卡片提供「渲染视图 / 原文」切换，纯文本消息亦获得换行/链接/加粗等基础排版；新增依赖 `marked@^18.0.12`、`dompurify@^3.4.15`（锁文件净 +17 行，frozen 安装与前端构建已验证）。API 推送字段（`title`/`message` 纯文本字符串）与各渠道投递行为完全不变，仅影响 WebUI 消息详情页的显示层。
 
+**缺陷修复（patches/0003）**：消息列表/筛选接口补齐 `source_name`/`channel_name`/`channel_type`（原列表只回 ID，WebUI 表格的来源名称/渠道名称列恒为空；批量 IN 去重填充避免 N+1）；概览页点击消息标题由弹提示改为真正跳转消息详情页（整行可点击）。`TestMessageService_*` 全部通过，`go vet`/前端构建/纯净 worktree 三补丁重放验证通过。
+
 ---
 
 ## 六、文件清单

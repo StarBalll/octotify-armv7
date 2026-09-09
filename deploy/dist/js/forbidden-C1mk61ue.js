@@ -1,1 +1,0 @@
-import{t as e}from"./objectSpread2-BHJFn0bq.js";import{Pn as t,cn as n,gn as r,gr as i}from"../jse/index-index-L0qObbky.js";import{t as a}from"./fallback-CCYDl9xs.js";var o=r(e(e({},{name:`Fallback403Demo`}),{},{__name:`forbidden`,setup(e){return(e,r)=>(t(),n(i(a),{status:`403`}))}}));export{o as default};

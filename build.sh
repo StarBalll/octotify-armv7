@@ -112,7 +112,17 @@ elif grep -q "viewRendered" "$REPO/frontend/apps/web-ele/src/locales/langs/zh-CN
 else
   echo "::error::patches/0002 既无法应用也不在源码中（上游基线可能已变更）"; exit 1
 fi
-# 关键点 2c：来源详情页"查看令牌"通过密码二次验证后仍显示脱敏星号（showTokenPlainText
+# 关键点 2c：重放 patches/0003 —— 概览/消息列表补齐来源与渠道名称 + 概览点击跳转详情（幂等）。
+#           纯后端 Go 变更 + 前端视图/文案，无依赖变更，重放后锁文件不受影响。
+if git -C "$REPO" apply --check "$ROOT/patches/0003-fix-dashboard-message-table-and-navigation.patch" 2>/dev/null; then
+  git -C "$REPO" apply "$ROOT/patches/0003-fix-dashboard-message-table-and-navigation.patch"
+  log "已重放 patches/0003（概览消息表格补齐名称 + 跳转详情）"
+elif grep -q "fillSourceAndChannelNames" "$REPO/backend/internal/service/message_service.go" 2>/dev/null; then
+  log "patches/0003 已在源码中，跳过重放"
+else
+  echo "::error::patches/0003 既无法应用也不在源码中（上游基线可能已变更）"; exit 1
+fi
+# 关键点 3：来源详情页"查看令牌"通过密码二次验证后仍显示脱敏星号（showTokenPlainText
 #           被置 false），用户看不到完整 token——改为验证后直接显示明文（幂等）。
 python3 - "$REPO/frontend/apps/web-ele/src/views/source/detail.vue" <<'PYEOF2'
 import sys, pathlib

@@ -1,0 +1,341 @@
+From 69295023484ecf902bd98bf7b4e8cc83263f4bf4 Mon Sep 17 00:00:00 2001
+From: OctoTify ARMv7 Builder <builder@armv7.local>
+Date: Wed, 9 Sep 2026 17:50:58 +0800
+Subject: [PATCH] =?UTF-8?q?fix:=20=E6=A6=82=E8=A7=88/=E6=B6=88=E6=81=AF?=
+ =?UTF-8?q?=E5=88=97=E8=A1=A8=E8=A1=A5=E9=BD=90=E6=9D=A5=E6=BA=90=E4=B8=8E?=
+ =?UTF-8?q?=E6=B8=A0=E9=81=93=E5=90=8D=E7=A7=B0=EF=BC=8C=E6=A6=82=E8=A7=88?=
+ =?UTF-8?q?=E7=82=B9=E5=87=BB=E8=B7=B3=E8=BD=AC=E6=B6=88=E6=81=AF=E8=AF=A6?=
+ =?UTF-8?q?=E6=83=85?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+后端（internal）:
+- dto.MessageDTO 增加 source_name/channel_name/channel_type 字段
+- ListMessages/FilterMessages 复用新增的 fillSourceAndChannelNames
+  批量填充（IN 去重查询，避免 N+1；填充失败仅告警不影响列表），
+  与详情接口 GetMessageByID 行为对齐
+- 原列表接口只回 ID，UI 表格的来源名称/渠道名称列恒为空
+
+前端（web-ele）:
+- dashboard/index.vue: handleViewDetail 由 ElMessage 占位改为
+  router.push('/message/detail/<id>')（修复点击仅弹提示无法跳转）；
+  整行可点击；列名/空态/加载失败文案接入 i18n（补 noRecords/
+  loadRecentFailed 两个 key）
+- e2e B-55 由「toast 非导航」断言改为「跳转详情页」断言
+
+验证: go vet + go build 通过；TestMessageService_* 全部通过；
+（TestChannelService_CreateChannel 的 DB 关闭用例与
+TestValidatePassword 的 128 位口令边界用例在基线即失败，与本次无关）；
+web-ele 构建通过，产物含 /message/detail 路由。
+---
+ backend/internal/handler/dto/message_dto.go   | 19 ++---
+ backend/internal/service/message_service.go   | 69 +++++++++++++++++++
+ e2e/tests/B-dashboard.spec.ts                 | 16 ++---
+ .../web-ele/src/locales/langs/en-US/page.json |  4 +-
+ .../web-ele/src/locales/langs/zh-CN/page.json |  4 +-
+ .../web-ele/src/views/dashboard/index.vue     | 40 +++++++----
+ 6 files changed, 122 insertions(+), 30 deletions(-)
+
+diff --git a/backend/internal/handler/dto/message_dto.go b/backend/internal/handler/dto/message_dto.go
+index 44d71a6..1bb4fea 100644
+--- a/backend/internal/handler/dto/message_dto.go
++++ b/backend/internal/handler/dto/message_dto.go
+@@ -8,14 +8,17 @@ type PushMessageReq struct {
+ 
+ // MessageDTO 消息记录响应
+ type MessageDTO struct {
+-	ID        int64  `json:"id" example:"1"`                        // 消息 ID
+-	SourceID  int64  `json:"source_id" example:"1"`                 // 来源 ID
+-	ChannelID int64  `json:"channel_id" example:"1"`                // 渠道 ID
+-	Title     string `json:"title" example:"CI Build"`              // 消息标题
+-	Content   string `json:"content" example:"Build #123 passed"`   // 消息内容
+-	Status    int    `json:"status" example:"200"`                  // 推送状态：100-待推送 200-成功 300-失败 -1-已删除
+-	CreatedAt int64  `json:"created_at_ts" example:"1714636800000"` // 创建时间（Unix 毫秒时间戳）
+-	UpdatedAt int64  `json:"updated_at_ts" example:"1714636800000"` // 更新时间（Unix 毫秒时间戳）
++	ID          int64  `json:"id" example:"1"`                        // 消息 ID
++	SourceID    int64  `json:"source_id" example:"1"`                 // 来源 ID
++	SourceName  string `json:"source_name" example:"CI Pipeline"`     // 来源名称（列表接口批量填充）
++	ChannelID   int64  `json:"channel_id" example:"1"`                // 渠道 ID
++	ChannelName string `json:"channel_name" example:"钉钉-运维群"`         // 渠道名称（列表接口批量填充）
++	ChannelType string `json:"channel_type" example:"dingtalk"`       // 渠道类型（列表接口批量填充）
++	Title       string `json:"title" example:"CI Build"`              // 消息标题
++	Content     string `json:"content" example:"Build #123 passed"`   // 消息内容
++	Status      int    `json:"status" example:"200"`                  // 推送状态：100-待推送 200-成功 300-失败 -1-已删除
++	CreatedAt   int64  `json:"created_at_ts" example:"1714636800000"` // 创建时间（Unix 毫秒时间戳）
++	UpdatedAt   int64  `json:"updated_at_ts" example:"1714636800000"` // 更新时间（Unix 毫秒时间戳）
+ }
+ 
+ // MessageDetailDTO 消息详情响应（包含来源和渠道信息）
+diff --git a/backend/internal/service/message_service.go b/backend/internal/service/message_service.go
+index 4d89eb3..9570142 100644
+--- a/backend/internal/service/message_service.go
++++ b/backend/internal/service/message_service.go
+@@ -99,6 +99,9 @@ func (s *MessageService) ListMessages(ctx context.Context, userID int64, pageReq
+ 		})
+ 	}
+ 
++	// 批量填充来源名称/渠道名称/渠道类型（UI 列表需要展示）
++	s.fillSourceAndChannelNames(ctx, list)
++
+ 	s.log(ctx).Info("查询消息列表成功",
+ 		zap.Int64("user_id", userID),
+ 		zap.Int("page", pageReq.Page),
+@@ -109,6 +112,69 @@ func (s *MessageService) ListMessages(ctx context.Context, userID int64, pageReq
+ 	return list, total, nil
+ }
+ 
++// fillSourceAndChannelNames 批量填充消息列表 DTO 的来源名称/渠道名称/渠道类型。
++// 列表接口的 UI 表格需要展示名称（与详情接口 GetMessageByID 行为一致）；
++// 使用 IN 批量查询避免 N+1。填充失败不影响列表本身，仅记录告警日志。
++func (s *MessageService) fillSourceAndChannelNames(ctx context.Context, list []*dto.MessageDTO) {
++	if len(list) == 0 {
++		return
++	}
++	q := query.Use(s.db)
++
++	// 去重收集需要查询的来源/渠道 ID
++	sourceIDs := make([]int64, 0, len(list))
++	channelIDs := make([]int64, 0, len(list))
++	seenSource := make(map[int64]struct{}, len(list))
++	seenChannel := make(map[int64]struct{}, len(list))
++	for _, m := range list {
++		if _, ok := seenSource[m.SourceID]; !ok {
++			seenSource[m.SourceID] = struct{}{}
++			sourceIDs = append(sourceIDs, m.SourceID)
++		}
++		if _, ok := seenChannel[m.ChannelID]; !ok {
++			seenChannel[m.ChannelID] = struct{}{}
++			channelIDs = append(channelIDs, m.ChannelID)
++		}
++	}
++
++	// 批量查询来源名称
++	sources, err := q.Source.WithContext(ctx).
++		Where(q.Source.ID.In(sourceIDs...)).
++		Select(q.Source.ID, q.Source.Name).
++		Find()
++	if err != nil {
++		s.log(ctx).Warn("批量查询来源名称失败", zap.Error(err))
++	} else {
++		nameByID := make(map[int64]string, len(sources))
++		for _, src := range sources {
++			nameByID[src.ID] = src.Name
++		}
++		for _, m := range list {
++			m.SourceName = nameByID[m.SourceID]
++		}
++	}
++
++	// 批量查询渠道名称与类型
++	channels, err := q.Channel.WithContext(ctx).
++		Where(q.Channel.ID.In(channelIDs...)).
++		Select(q.Channel.ID, q.Channel.Name, q.Channel.Type).
++		Find()
++	if err != nil {
++		s.log(ctx).Warn("批量查询渠道信息失败", zap.Error(err))
++	} else {
++		nameByID := make(map[int64]string, len(channels))
++		typeByID := make(map[int64]string, len(channels))
++		for _, ch := range channels {
++			nameByID[ch.ID] = ch.Name
++			typeByID[ch.ID] = ch.Type
++		}
++		for _, m := range list {
++			m.ChannelName = nameByID[m.ChannelID]
++			m.ChannelType = typeByID[m.ChannelID]
++		}
++	}
++}
++
+ // FilterMessages 筛选消息记录
+ // 按照 UML 04-02-filter-messages.puml 实现
+ // 支持按来源、渠道、状态、时间范围、关键词等条件筛选
+@@ -196,6 +262,9 @@ func (s *MessageService) FilterMessages(ctx context.Context, userID int64, filte
+ 		})
+ 	}
+ 
++	// 批量填充来源名称/渠道名称/渠道类型（UI 列表需要展示）
++	s.fillSourceAndChannelNames(ctx, list)
++
+ 	s.log(ctx).Info("筛选消息列表成功",
+ 		zap.Int64("user_id", userID),
+ 		zap.Int("page", filter.Page),
+diff --git a/e2e/tests/B-dashboard.spec.ts b/e2e/tests/B-dashboard.spec.ts
+index bc9265e..9680e61 100644
+--- a/e2e/tests/B-dashboard.spec.ts
++++ b/e2e/tests/B-dashboard.spec.ts
+@@ -57,7 +57,7 @@ test.describe('B-Dashboard: 仪表盘', () => {
+     await expect(page.getByText('创建时间')).toBeVisible();
+   });
+ 
+-  test('B-55: 点击"查看详情"显示 toast（非导航）', async ({ page }) => {
++  test('B-55: 点击标题跳转至消息详情页', async ({ page }) => {
+     await page.goto('/dashboard/index');
+     await page.waitForURL(/\/dashboard/, { timeout: 10000 });
+ 
+@@ -72,16 +72,16 @@ test.describe('B-Dashboard: 仪表盘', () => {
+       const isLinkVisible = await firstTitleLink.isVisible().catch(() => false);
+ 
+       if (isLinkVisible) {
+-        const urlBeforeClick = page.url();
+         await firstTitleLink.click();
+ 
+-        const toast = page.locator('.el-message').filter({ hasText: /查看消息详情/ });
+-        await expect(toast).toBeVisible({ timeout: 5000 });
++        // 点击标题应导航至消息详情页 /message/detail/<id>
++        await page.waitForURL(/\/message\/detail\/\d+/, { timeout: 10000 });
++        expect(page.url()).toMatch(/\/message\/detail\/\d+/);
+ 
+-        const toastContent = await toast.textContent();
+-        expect(toastContent).toContain('查看消息详情');
+-
+-        expect(page.url()).toBe(urlBeforeClick);
++        // 详情页应完成加载（出现"返回"按钮或消息描述区）
++        await expect(page.locator('.el-descriptions').first()).toBeVisible({
++          timeout: 10000,
++        });
+       }
+     }
+   });
+diff --git a/frontend/apps/web-ele/src/locales/langs/en-US/page.json b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+index 4cae5e0..d82bd71 100644
+--- a/frontend/apps/web-ele/src/locales/langs/en-US/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+@@ -19,7 +19,9 @@
+     "sourceName": "Source Name",
+     "channelName": "Channel Name",
+     "status": "Status",
+-    "createTime": "Create Time"
++    "createTime": "Create Time",
++    "noRecords": "No push records",
++    "loadRecentFailed": "Failed to load recent pushes"
+   },
+   "source": {
+     "title": "Sources",
+diff --git a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+index a8d3d75..2924871 100644
+--- a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+@@ -19,7 +19,9 @@
+     "sourceName": "来源名称",
+     "channelName": "渠道名称",
+     "status": "状态",
+-    "createTime": "创建时间"
++    "createTime": "创建时间",
++    "noRecords": "暂无推送记录",
++    "loadRecentFailed": "加载最近推送记录失败"
+   },
+   "source": {
+     "title": "消息来源",
+diff --git a/frontend/apps/web-ele/src/views/dashboard/index.vue b/frontend/apps/web-ele/src/views/dashboard/index.vue
+index cfb2a6a..56200a3 100644
+--- a/frontend/apps/web-ele/src/views/dashboard/index.vue
++++ b/frontend/apps/web-ele/src/views/dashboard/index.vue
+@@ -34,7 +34,8 @@
+         :data="recentMessages"
+         stripe
+         style="width: 100%"
+-        empty-text="暂无推送记录"
++        :empty-text="$t('page.dashboard.noRecords')"
++        @row-click="handleRowClick"
+       >
+         <ElTableColumn
+           prop="title"
+@@ -45,7 +46,7 @@
+           <template #default="{ row }">
+             <a
+               class="text-blue-500 hover:text-blue-700 cursor-pointer"
+-              @click="handleViewDetail(row.id)"
++              @click.stop="handleViewDetail(row.id)"
+             >
+               {{ row.title }}
+             </a>
+@@ -54,19 +55,27 @@
+ 
+         <ElTableColumn
+           prop="source_name"
+-          label="来源名称"
++          :label="$t('page.dashboard.sourceName')"
+           min-width="120"
+           show-overflow-tooltip
+-        />
++        >
++          <template #default="{ row }">
++            {{ row.source_name || '--' }}
++          </template>
++        </ElTableColumn>
+ 
+         <ElTableColumn
+           prop="channel_name"
+-          label="渠道名称"
++          :label="$t('page.dashboard.channelName')"
+           min-width="120"
+           show-overflow-tooltip
+-        />
++        >
++          <template #default="{ row }">
++            {{ row.channel_name || '--' }}
++          </template>
++        </ElTableColumn>
+ 
+-        <ElTableColumn prop="status" label="状态" width="100" align="center">
++        <ElTableColumn prop="status" :label="$t('page.dashboard.status')" width="100" align="center">
+           <template #default="{ row }">
+             <ElTag :type="getStatusTagType(row.status)" size="small">
+               {{ getStatusLabel(row.status) }}
+@@ -74,7 +83,7 @@
+           </template>
+         </ElTableColumn>
+ 
+-        <ElTableColumn prop="created_at_ts" label="创建时间" width="180">
++        <ElTableColumn prop="created_at_ts" :label="$t('page.dashboard.createTime')" width="180">
+           <template #default="{ row }">
+             {{ formatTimestamp(row.created_at_ts) }}
+           </template>
+@@ -86,6 +95,7 @@
+ 
+ <script setup lang="ts">
+ import { ref, onMounted, computed } from 'vue';
++import { useRouter } from 'vue-router';
+ import { ElCard, ElRow, ElCol, ElTable, ElTableColumn, ElTag, ElMessage } from 'element-plus';
+ import { IconifyIcon } from '@vben/icons';
+ import { $t } from '#/locales';
+@@ -95,6 +105,8 @@ import { getMessageListApi, filterMessagesApi, type MessageApi } from '#/api/mod
+ import { formatTimestamp } from '#/utils/time';
+ import { getMessageStatusLabel, getMessageStatusTagType } from '#/utils/status';
+ 
++const router = useRouter();
++
+ // 统计数据
+ const statData = ref({
+   sourceTotal: 0,
+@@ -206,17 +218,21 @@ async function loadRecentMessages() {
+     const res = await getMessageListApi({ page: 1, page_size: 10 });
+     recentMessages.value = res?.list ?? [];
+   } catch (error) {
+-    ElMessage.error('加载最近推送记录失败');
++    ElMessage.error($t('page.dashboard.loadRecentFailed'));
+     console.error('Failed to load recent messages:', error);
+   } finally {
+     tableLoading.value = false;
+   }
+ }
+ 
+-// 查看消息详情
++// 查看消息详情：点击行或标题跳转至消息详情页
++function handleRowClick(row: MessageApi.MessageDTO) {
++  handleViewDetail(row.id);
++}
++
+ function handleViewDetail(messageId: number) {
+-  // TODO: 跳转至消息详情页
+-  ElMessage.info(`查看消息详情: ${messageId}`);
++  if (!messageId) return;
++  router.push(`/message/detail/${messageId}`);
+ }
+ 
+ // 初始化加载
+-- 
+2.43.0
+

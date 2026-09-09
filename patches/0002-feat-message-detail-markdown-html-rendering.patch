@@ -1,0 +1,376 @@
+From ad5f7cf764ccddd6b1b1c76382b70eb6ca3ae7f1 Mon Sep 17 00:00:00 2001
+From: OctoTify ARMv7 Builder <builder@armv7.local>
+Date: Wed, 9 Sep 2026 17:21:57 +0800
+Subject: [PATCH] =?UTF-8?q?feat(frontend):=20=E6=B6=88=E6=81=AF=E8=AF=A6?=
+ =?UTF-8?q?=E6=83=85=E6=AD=A3=E6=96=87=E6=94=AF=E6=8C=81=20Markdown/HTML?=
+ =?UTF-8?q?=20=E5=AF=8C=E6=96=87=E6=9C=AC=E5=AE=89=E5=85=A8=E6=B8=B2?=
+ =?UTF-8?q?=E6=9F=93?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- 正文卡片新增 渲染视图/原文 切换（ElRadioGroup，默认渲染视图）
+- Markdown（GFM，breaks 单换行转 <br>）经 marked 解析；以块级标签开头的
+  内容按 HTML 直接渲染；全部输出统一经 DOMPurify 净化（禁 iframe/
+  object/embed/form/base/meta，链接强制 _blank+noopener）
+- 新增依赖 marked@^18.0.12、dompurify@^3.4.15（web-ele）；
+  pnpm-lock.yaml 在上游原锁文件基础上仅追加这两个包的
+  resolution/snapshot/importer 记录（净 +17 行），
+  pnpm install --frozen-lockfile 验证通过且锁文件零变更
+- 新增 i18n: page.message.viewRendered / viewSource（zh-CN/en-US）
+- 样式使用中性半透明配色，兼容亮色/暗色主题；长文自动换行、代码块横向滚动
+- 还原本地被 .gitignore 的 Vben 样板包 frontend/scripts/{turbo-run,vsh}、
+  frontend/docs（未入库，仅工作区存在，供 pnpm 重解析使用）
+
+原文视图保留推送时的原始文本；纯文本消息在渲染视图下获得基础排版
+（换行/链接/加粗等）。
+---
+ frontend/apps/web-ele/package.json            |   2 +
+ .../web-ele/src/locales/langs/en-US/page.json |   4 +-
+ .../web-ele/src/locales/langs/zh-CN/page.json |   4 +-
+ .../apps/web-ele/src/views/message/detail.vue | 197 +++++++++++++++++-
+ frontend/pnpm-lock.yaml                       |  17 ++
+ 5 files changed, 218 insertions(+), 6 deletions(-)
+
+diff --git a/frontend/apps/web-ele/package.json b/frontend/apps/web-ele/package.json
+index 3478b8b..7be6e5f 100644
+--- a/frontend/apps/web-ele/package.json
++++ b/frontend/apps/web-ele/package.json
+@@ -43,7 +43,9 @@
+     "@vueuse/core": "catalog:",
+     "@vueuse/integrations": "catalog:",
+     "dayjs": "catalog:",
++    "dompurify": "^3.4.15",
+     "element-plus": "catalog:",
++    "marked": "^18.0.12",
+     "pinia": "catalog:",
+     "vue": "catalog:",
+     "vue-router": "catalog:"
+diff --git a/frontend/apps/web-ele/src/locales/langs/en-US/page.json b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+index e68c6b4..4cae5e0 100644
+--- a/frontend/apps/web-ele/src/locales/langs/en-US/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+@@ -169,7 +169,9 @@
+     "loadFailed": "Failed to load message list",
+     "loadDetailFailed": "Failed to load message detail",
+     "invalidId": "Invalid message ID",
+-    "messageTitle": "Message Title"
++    "messageTitle": "Message Title",
++    "viewRendered": "Rendered",
++    "viewSource": "Source"
+   },
+   "settings": {
+     "title": "Settings",
+diff --git a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+index a7df567..a8d3d75 100644
+--- a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+@@ -169,7 +169,9 @@
+     "loadFailed": "加载消息列表失败",
+     "loadDetailFailed": "加载消息详情失败",
+     "invalidId": "无效的消息 ID",
+-    "messageTitle": "消息标题"
++    "messageTitle": "消息标题",
++    "viewRendered": "渲染视图",
++    "viewSource": "原文"
+   },
+   "settings": {
+     "title": "系统设置",
+diff --git a/frontend/apps/web-ele/src/views/message/detail.vue b/frontend/apps/web-ele/src/views/message/detail.vue
+index 63609cc..84f2d9a 100644
+--- a/frontend/apps/web-ele/src/views/message/detail.vue
++++ b/frontend/apps/web-ele/src/views/message/detail.vue
+@@ -30,11 +30,35 @@
+           </ElDescriptionsItem>
+         </ElDescriptions>
+ 
+-        <!-- 消息内容 -->
+-        <ElCard :title="$t('page.message.messageContent')" shadow="never" class="mb-6">
+-          <div class="whitespace-pre-wrap text-gray-700 leading-relaxed">
++        <!-- 消息内容：自动识别 Markdown / HTML 富文本并安全渲染，可随时切换回原文 -->
++        <ElCard shadow="never" class="mb-6">
++          <template #header>
++            <div class="flex items-center justify-between">
++              <span class="font-semibold">{{ $t('page.message.messageContent') }}</span>
++              <ElRadioGroup v-if="hasContent" v-model="viewMode" size="small">
++                <ElRadioButton value="rendered">
++                  {{ $t('page.message.viewRendered') }}
++                </ElRadioButton>
++                <ElRadioButton value="source">
++                  {{ $t('page.message.viewSource') }}
++                </ElRadioButton>
++              </ElRadioGroup>
++            </div>
++          </template>
++          <!-- 原文视图：保留推送时的原始文本 -->
++          <div
++            v-if="viewMode === 'source'"
++            class="whitespace-pre-wrap break-words leading-relaxed"
++          >
+             {{ messageDetail.content || '--' }}
+           </div>
++          <!-- 渲染视图：Markdown / HTML 经 DOMPurify 净化后展示 -->
++          <div
++            v-else-if="renderedHtml"
++            class="message-rich-body"
++            v-html="renderedHtml"
++          ></div>
++          <div v-else class="leading-relaxed opacity-50">--</div>
+         </ElCard>
+ 
+         <!-- 来源信息 -->
+@@ -69,8 +93,10 @@
+ </template>
+ 
+ <script setup lang="ts">
+-import { ref, onMounted } from 'vue';
++import { computed, ref, onMounted } from 'vue';
+ import { useRoute, useRouter } from 'vue-router';
++import { marked } from 'marked';
++import DOMPurify from 'dompurify';
+ import {
+   ElCard,
+   ElButton,
+@@ -78,6 +104,8 @@ import {
+   ElDescriptionsItem,
+   ElTag,
+   ElMessage,
++  ElRadioGroup,
++  ElRadioButton,
+ } from 'element-plus';
+ import { IconifyIcon } from '@vben/icons';
+ import { $t } from '#/locales';
+@@ -94,6 +122,49 @@ const router = useRouter();
+ const loading = ref(false);
+ const messageDetail = ref<MessageApi.MessageDTO | null>(null);
+ const channelTypeMeta = ref<Record<string, string>>({});
++const viewMode = ref<'rendered' | 'source'>('rendered');
++
++// 富文本链接统一新窗口打开并解除 opener 关联（DOMPurify 官方推荐做法，模块级仅安装一次）
++let linkHookInstalled = false;
++function installLinkHook() {
++  if (linkHookInstalled) return;
++  linkHookInstalled = true;
++  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
++    if (node.tagName === 'A') {
++      node.setAttribute('target', '_blank');
++      node.setAttribute('rel', 'noopener noreferrer nofollow');
++    }
++  });
++}
++installLinkHook();
++
++// HTML 内容识别：以块级/常见内联标签开头才按 HTML 渲染，避免把 "< 3" 之类普通文本误判
++function looksLikeHtml(content: string): boolean {
++  const text = content.trim();
++  if (!text.startsWith('<')) return false;
++  return /<\/?(?:html|body|div|p|br|h[1-6]|ul|ol|li|table|thead|tbody|tr|td|th|blockquote|pre|section|article|header|footer|span|strong|em|b|i|u|s|a|img|font|center|code|hr)\b/i.test(
++    text.slice(0, 512),
++  );
++}
++
++const hasContent = computed(() => Boolean(messageDetail.value?.content?.trim()));
++
++// 渲染视图 HTML：HTML 直接净化；其余内容一律按 GFM Markdown 解析
++// （纯文本消息也能获得换行/链接/加粗等基础排版），输出统一经 DOMPurify 净化防 XSS
++const renderedHtml = computed(() => {
++  const content = messageDetail.value?.content ?? '';
++  if (!content.trim()) return '';
++  try {
++    const rawHtml = looksLikeHtml(content)
++      ? content
++      : marked.parse(content, { async: false, gfm: true, breaks: true });
++    return DOMPurify.sanitize(rawHtml, {
++      FORBID_TAGS: ['iframe', 'object', 'embed', 'form', 'base', 'meta'],
++    });
++  } catch {
++    return '';
++  }
++});
+ 
+ // 加载详情
+ async function loadDetail() {
+@@ -107,6 +178,7 @@ async function loadDetail() {
+   try {
+     const res = await getMessageDetailApi(id);
+     messageDetail.value = res;
++    viewMode.value = 'rendered';
+   } catch {
+     ElMessage.error($t('page.message.loadDetailFailed'));
+   } finally {
+@@ -154,3 +226,120 @@ onMounted(() => {
+   Promise.all([loadDetail(), loadTypeMeta()]);
+ });
+ </script>
++
++<style scoped>
++/* 渲染视图排版：中性半透明配色，亮色/暗色主题下均可读 */
++.message-rich-body {
++  color: inherit;
++  line-height: 1.75;
++  overflow-wrap: anywhere;
++  word-break: break-word;
++}
++
++.message-rich-body :deep(h1),
++.message-rich-body :deep(h2),
++.message-rich-body :deep(h3),
++.message-rich-body :deep(h4),
++.message-rich-body :deep(h5),
++.message-rich-body :deep(h6) {
++  margin: 0.8em 0 0.4em;
++  font-weight: 600;
++  line-height: 1.4;
++}
++
++.message-rich-body :deep(h1:first-child),
++.message-rich-body :deep(h2:first-child),
++.message-rich-body :deep(h3:first-child),
++.message-rich-body :deep(h4:first-child),
++.message-rich-body :deep(h5:first-child),
++.message-rich-body :deep(h6:first-child),
++.message-rich-body :deep(p:first-child) {
++  margin-top: 0;
++}
++
++.message-rich-body :deep(p) {
++  margin: 0.5em 0;
++}
++
++.message-rich-body :deep(ul),
++.message-rich-body :deep(ol) {
++  margin: 0.5em 0;
++  padding-left: 1.6em;
++}
++
++.message-rich-body :deep(li) {
++  margin: 0.25em 0;
++}
++
++.message-rich-body :deep(a) {
++  color: var(--el-color-primary);
++  text-decoration: none;
++}
++
++.message-rich-body :deep(a:hover) {
++  text-decoration: underline;
++}
++
++.message-rich-body :deep(code) {
++  padding: 0.15em 0.45em;
++  border-radius: 4px;
++  background: rgb(128 128 128 / 15%);
++  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
++  font-size: 0.9em;
++}
++
++.message-rich-body :deep(pre) {
++  margin: 0.6em 0;
++  padding: 0.8em 1em;
++  overflow-x: auto;
++  border: 1px solid rgb(128 128 128 / 25%);
++  border-radius: 6px;
++  background: rgb(128 128 128 / 12%);
++}
++
++.message-rich-body :deep(pre code) {
++  padding: 0;
++  background: transparent;
++  font-size: 0.9em;
++}
++
++.message-rich-body :deep(blockquote) {
++  margin: 0.6em 0;
++  padding: 0.4em 1em;
++  border-left: 3px solid rgb(128 128 128 / 40%);
++  border-radius: 4px;
++  background: rgb(128 128 128 / 10%);
++  color: inherit;
++  opacity: 0.85;
++}
++
++.message-rich-body :deep(table) {
++  width: 100%;
++  margin: 0.6em 0;
++  border-collapse: collapse;
++}
++
++.message-rich-body :deep(th),
++.message-rich-body :deep(td) {
++  padding: 0.4em 0.8em;
++  border: 1px solid rgb(128 128 128 / 30%);
++  text-align: left;
++}
++
++.message-rich-body :deep(th) {
++  background: rgb(128 128 128 / 12%);
++  font-weight: 600;
++}
++
++.message-rich-body :deep(img) {
++  max-width: 100%;
++  height: auto;
++  border-radius: 4px;
++}
++
++.message-rich-body :deep(hr) {
++  margin: 1em 0;
++  border: none;
++  border-top: 1px solid rgb(128 128 128 / 30%);
++}
++</style>
+diff --git a/frontend/pnpm-lock.yaml b/frontend/pnpm-lock.yaml
+index 6b5b1a7..25b5c21 100644
+--- a/frontend/pnpm-lock.yaml
++++ b/frontend/pnpm-lock.yaml
+@@ -663,9 +663,15 @@ importers:
+       dayjs:
+         specifier: 'catalog:'
+         version: 1.11.20
++      dompurify:
++        specifier: ^3.4.15
++        version: 3.4.15
+       element-plus:
+         specifier: 'catalog:'
+         version: 2.13.7(typescript@6.0.3)(vue@3.5.33(typescript@6.0.3))
++      marked:
++        specifier: ^18.0.12
++        version: 18.0.12
+       pinia:
+         specifier: ^3.0.4
+         version: 3.0.4(typescript@6.0.3)(vue@3.5.33(typescript@6.0.3))
+@@ -6348,6 +6354,13 @@ packages:
+     resolution: {integrity: sha512-cgwlv/1iFQiFnU96XXgROh8xTeetsnJiDsTc7TYCLFd9+/WNkIqPTxiM/8pSd8VIrhXGTf1Ny1q1hquVqDJB5w==}
+     engines: {node: '>= 4'}
+ 
++  dompurify@3.4.15:
++    resolution: {integrity: sha512-EUBjM+B+lkDE41iE82DDSCfkoPGfXx8IxFxPMjNzm/Uk4xDet77rTN9wqlxlVg71kK7XGuUMv6wUxJUwwv+Xyw==}
++
++  marked@18.0.12:
++    resolution: {integrity: sha512-LEm4ga2YeI2T3GVHj9b0BaDPPk93LLTHMFeMyQbNIzPxc8vCI0y/scy0ZA6z6lXKyT9j9Nhl/OC6ZYKYGuFScA==}
++    engines: {node: '>= 20'}
++    hasBin: true
+   domutils@3.2.2:
+     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
+ 
+@@ -15219,6 +15232,9 @@ snapshots:
+     dependencies:
+       domelementtype: 2.3.0
+ 
++  dompurify@3.4.15:
++    optionalDependencies:
++      '@types/trusted-types': 2.0.7
+   domutils@3.2.2:
+     dependencies:
+       dom-serializer: 2.0.0
+@@ -16964,6 +16980,7 @@ snapshots:
+     optional: true
+ 
+   mark.js@8.11.1: {}
++  marked@18.0.12: {}
+ 
+   math-intrinsics@1.1.0: {}
+ 
+-- 
+2.43.0
+

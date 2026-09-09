@@ -7,7 +7,7 @@
 
 - **上游官方仓库**：[loommii/OctoTify](https://github.com/loommii/OctoTify) —— 一个轻量自托管通知网关，单 API 广播到多渠道（钉钉/飞书/TG/邮件/Gotify 等）。本项目的全部应用功能、前端 UI 与后端服务均来自该上游，**本仓库不修改任何业务功能**。
 - **本仓库**：[StarBalll/octotify-armv7](https://github.com/StarBalll/octotify-armv7) —— 仅承担「32位 ARM 交叉编译 + Docker 镜像交付 + 设备端部署编排」。
-- 补丁后源码快照：分支 [`octotify-source-armv7-fixes`](https://github.com/StarBalll/octotify-armv7/tree/octotify-source-armv7-fixes)（完整上游历史 + 4 处环境适配修复 + 1 处功能增强，见 [patches/](./patches/)）。
+- 补丁后源码快照：分支 [`octotify-source-armv7-fixes`](https://github.com/StarBalll/octotify-armv7/tree/octotify-source-armv7-fixes)（完整上游历史 + 4 处环境适配修复 + 2 项功能增强/修复，见 [patches/](./patches/)）。
 - 若此项目对你有用，请先给上游 [loommii/OctoTify](https://github.com/loommii/OctoTify) 点个 Star ⭐。
 
 针对 OctoTify 官方不支持 ARMv7 (32位) 的问题，完成全流程交叉编译 + 自定义 Docker 镜像 + ARM 设备部署。
@@ -130,5 +130,13 @@ notify "夜间备份" "/data 备份完成, 大小 3.2G"
 | `message/detail.vue` | 消息详情正文支持 **Markdown（GFM）与 HTML** 安全渲染：marked 解析 + DOMPurify 净化（禁 iframe/object/embed/form 等，链接强制 `_blank`+`noopener`）；正文卡片提供「渲染视图 / 原文」切换；纯文本消息亦获得换行/链接/加粗等基础排版；中性配色兼容亮/暗主题 |
 | `web-ele/package.json` + `pnpm-lock.yaml` | 新增依赖 `marked@^18.0.12`、`dompurify@^3.4.15`（锁文件净 +17 行，frozen 安装验证通过） |
 | locale `page.json` ×2 | 新增 `page.message.viewRendered` / `viewSource` 文案 |
+
+### 缺陷修复（0003，概览消息表格 + 跳转）
+
+| 文件 | 内容 |
+|---|---|
+| 后端 `dto.MessageDTO` + `message_service.go` | 消息列表/筛选接口补齐 `source_name`/`channel_name`/`channel_type`（原只回 ID，UI 表格来源名称/渠道名称列恒为空）；批量 IN 去重填充，避免 N+1 |
+| 前端 `dashboard/index.vue` | 修复点击消息标题仅弹提示无法跳转——改为 `router.push('/message/detail/<id>')`，整行可点击；列名/空态/错误文案接入 i18n |
+| e2e `B-dashboard.spec.ts` | B-55 用例由「toast 非导航」改为「跳转详情页」断言 |
 
 构建参数关键差异（详见交付文档）：去 `-tags=sonic`（不支持32位）、musl 交叉工具链、`VITE_GLOB_API_URL=/`。
