@@ -69,7 +69,7 @@
 
       <ElTable v-loading="loading" :data="messageList" stripe style="width: 100%">
         <ElTableColumn prop="id" label="ID" width="80" align="center" />
-        <ElTableColumn :label="$t('dashboard.messageTitle')" prop="title" min-width="180">
+        <ElTableColumn :label="$t('page.dashboard.messageTitle')" prop="title" min-width="180">
           <template #default="{ row }">
             <a
               class="text-blue-500 hover:text-blue-700 cursor-pointer"
@@ -79,10 +79,14 @@
             </a>
           </template>
         </ElTableColumn>
-        <ElTableColumn :label="$t('dashboard.sourceName')" prop="source_name" min-width="120" />
-        <ElTableColumn :label="$t('dashboard.channelName')" prop="channel_name" min-width="120">
+        <ElTableColumn :label="$t('page.dashboard.sourceName')" prop="source_name" min-width="120">
           <template #default="{ row }">
-            {{ row.channel_name }}
+            {{ row.source_name || '--' }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn :label="$t('page.dashboard.channelName')" prop="channel_name" min-width="120">
+          <template #default="{ row }">
+            {{ row.channel_name || '--' }}
             <ElTag v-if="row.channel_type" size="small" class="ml-1">
               {{ getChannelTypeLabel(row.channel_type) }}
             </ElTag>
