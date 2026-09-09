@@ -1,6 +1,6 @@
 # OctoTify ARMv7 版本基线（build.sh 与交付流程引用本文件）
 # 端口版本遵循语义化版本 SemVer：vMAJOR.MINOR.PATCH（-armv7 由 tag 后缀体现）
-PORT_VERSION=1.1.0  # 已部署 246 @ 2026-09-09
+PORT_VERSION=1.1.0  # 已部署 247 @ 2026-09-09（原位升级，数据保留；246 为误部署的演示实例）
 # 对应的上游 OctoTify 基线（本端口由此 commit 源码构建 + patches/ 重放）
 UPSTREAM_BASE=c6d551f
 UPSTREAM_BASE_DATE=2026-07-09
