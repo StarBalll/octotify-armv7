@@ -1,1 +1,0 @@
-import{l as e}from"./install-BMHOK5Nz.js";import{E as t,b as n,d as r,l as i,p as a,u as o,w as s,y as c}from"./icon-BvDW1SRm.js";var l=e([String,Object,Function]),u={Close:a},d={Close:a,SuccessFilled:s,InfoFilled:c,WarningFilled:t,CircleCloseFilled:r},f={primary:c,success:s,warning:t,error:r,info:c},p={validating:n,success:i,error:o};export{l as a,p as i,d as n,f as r,u as t};

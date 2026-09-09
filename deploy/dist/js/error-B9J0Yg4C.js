@@ -1,1 +1,0 @@
-import{Or as e}from"../jse/index-index-DOn-dbto.js";var t=[``,`default`,`small`,`large`],n=class extends Error{constructor(e){super(e),this.name=`ElementPlusError`}};function r(e,t){throw new n(`[${e}] ${t}`)}function i(t,r){{let i=e(t)?new n(`[${t}] ${r}`):t;console.warn(i)}}export{r as n,t as r,i as t};

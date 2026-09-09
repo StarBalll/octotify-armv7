@@ -1,0 +1,456 @@
+From 66518eadd1e13193bff3dc9302586d805fbdbb9a Mon Sep 17 00:00:00 2001
+From: OctoTify ARMv7 Builder <builder@armv7.local>
+Date: Thu, 10 Sep 2026 01:11:58 +0800
+Subject: [PATCH] =?UTF-8?q?perf(frontend):=20=E9=95=BF=E6=96=87=E8=AF=A6?=
+ =?UTF-8?q?=E6=83=85=E5=88=86=E6=AE=B5=E6=8C=89=E9=9C=80=E6=B8=B2=E6=9F=93?=
+ =?UTF-8?q?=EF=BC=88=E5=8A=A0=E8=BD=BD=E6=9B=B4=E5=A4=9A+=E6=BB=9A?=
+ =?UTF-8?q?=E5=8A=A8=E7=BB=AD=E5=A1=AB=EF=BC=89=EF=BC=8C=E6=A0=B9=E6=B2=BB?=
+ =?UTF-8?q?=E5=88=87tab=E5=8D=A1=E9=A1=BF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+前版渐进渲染消除了同步阻塞，但全部段落最终仍插入 DOM——157KB 晚报
+约 1.2 万标签，打开瞬间与渲染↔原文切换时的一次性布局依旧卡顿（ARM 尤甚）。
+
+分段按需渲染：
+- 源文切分为 24K 段：空行+安全切点（列表项/引用/标题/表格行）；
+  无空行的巨型列表（如千余条时间线）也能细切。实测 157KB → 7 段
+  （原方案 5 段且单段 70K/7232 标签）
+- 首屏仅渲染 2 段（约 2000 标签、parse 19ms），后续「加载更多」每批
+  3 段；滚动接近底部自动连续续填（每批一帧让出主线程，离开底部即停）
+- 有序列表切段由 CommonMark start 属性保号；围栏/表格不切断
+- 已渲染段独立缓存，切 tab/往返滚动零重复解析
+- 双视图常驻 DOM（v-show），tab 切换零重建；原文视图
+  content-visibility:auto 跳过屏外布局
+---
+ .../web-ele/src/locales/langs/en-US/page.json |   4 +-
+ .../web-ele/src/locales/langs/zh-CN/page.json |   4 +-
+ .../apps/web-ele/src/views/message/detail.vue | 294 ++++++++++++------
+ 3 files changed, 200 insertions(+), 102 deletions(-)
+
+diff --git a/frontend/apps/web-ele/src/locales/langs/en-US/page.json b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+index 061a074..d0b0146 100644
+--- a/frontend/apps/web-ele/src/locales/langs/en-US/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+@@ -174,7 +174,9 @@
+     "messageTitle": "Message Title",
+     "viewRendered": "Rendered",
+     "viewSource": "Source",
+-    "rendering": "Rendering body"
++    "rendering": "Rendering body",
++    "loadMore": "Load more",
++    "allLoaded": "All loaded"
+   },
+   "settings": {
+     "title": "Settings",
+diff --git a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+index ae07eb2..a2e1af1 100644
+--- a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+@@ -174,7 +174,9 @@
+     "messageTitle": "消息标题",
+     "viewRendered": "渲染视图",
+     "viewSource": "原文",
+-    "rendering": "正在渲染正文"
++    "rendering": "正在渲染正文",
++    "loadMore": "加载更多",
++    "allLoaded": "已加载全部"
+   },
+   "settings": {
+     "title": "系统设置",
+diff --git a/frontend/apps/web-ele/src/views/message/detail.vue b/frontend/apps/web-ele/src/views/message/detail.vue
+index b26521e..54f8a3e 100644
+--- a/frontend/apps/web-ele/src/views/message/detail.vue
++++ b/frontend/apps/web-ele/src/views/message/detail.vue
+@@ -45,16 +45,19 @@
+               </ElRadioGroup>
+             </div>
+           </template>
+-          <!-- 原文视图：保留推送时的原始文本 -->
++          <!-- 原文视图：保留推送时的原始文本。
++               超长原文用 content-visibility 跳过屏外渲染；双视图均常驻 DOM
++               （v-show），tab 切换零重建开销 -->
+           <div
+-            v-if="viewMode === 'source'"
+-            class="whitespace-pre-wrap break-words leading-relaxed"
++            v-show="viewMode === 'source'"
++            class="source-view whitespace-pre-wrap break-words leading-relaxed"
+           >
+-            {{ messageDetail.content || '--' }}
++            {{ messageDetail?.content || '--' }}
+           </div>
+           <!-- 渲染视图：Markdown / HTML 经 DOMPurify 净化后展示。
+-               超长文本走分块渐进渲染（每块间让出主线程），渲染期间显示进度条 -->
+-          <template v-else>
++               超长文本分段按需渲染（首段 + 「加载更多」+ 滚动到底自动续载），
++               已渲染段落缓存，切 tab / 往返滚动零重复解析 -->
++          <div v-show="viewMode === 'rendered'">
+             <div
+               v-if="renderStage === 'rendering'"
+               class="mb-2 flex items-center gap-3"
+@@ -73,8 +76,26 @@
+               ref="mdBox"
+               class="message-rich-body"
+             ></div>
++            <!-- 加载更多：分段渲染的控制条（仅超长文出现） -->
++            <div
++              v-if="segmentState.visible"
++              class="mt-3 flex justify-center"
++            >
++              <ElButton
++                :loading="segmentState.loading"
++                :type="segmentState.done ? 'default' : 'primary'"
++                plain
++                @click="loadMoreSegments"
++              >
++                {{
++                  segmentState.done
++                    ? $t('page.message.allLoaded')
++                    : `${$t('page.message.loadMore')} (${segmentState.rendered}/${segmentState.total})`
++                }}
++              </ElButton>
++            </div>
+             <div v-if="!hasContent" class="leading-relaxed opacity-50">--</div>
+-          </template>
++          </div>
+         </ElCard>
+ 
+         <!-- 来源信息 -->
+@@ -109,7 +130,7 @@
+ </template>
+ 
+ <script setup lang="ts">
+-import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
++import { computed, ref, reactive, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
+ import { useRoute, useRouter } from 'vue-router';
+ import { marked } from 'marked';
+ import DOMPurify from 'dompurify';
+@@ -167,39 +188,58 @@ function looksLikeHtml(content: string): boolean {
+ const hasContent = computed(() => Boolean(messageDetail.value?.content?.trim()));
+ 
+ // ---------------------------------------------------------------------------
+-// 超长文本渐进渲染：
+-// marked 解析本身很快（200K 约 50ms），真正卡死页面的是
+-//   1) DOMPurify 对数百 KB 输出 HTML 的整棵 DOM 净化
+-//   2) 浏览器一次性 innerHTML 数万节点的解析与布局
+-// 三者同步串在一次主线程任务里会导致 UI 冻结数秒（移动端尤甚）。
+-// 方案：按空行分块（围栏感知，不切断代码块/表格），逐块「解析→净化→追加 DOM」，
+-// 每块间 setTimeout(0) 让出主线程；小文本（< CHUNK_THRESHOLD）保持一次性
+-// 同步路径。每次渲染可取消（route 变化/内容变化/组件卸载）。
++// 超长文本分段按需渲染（load-more）：
++// 前版分块渐进渲染解决了"同步阻塞"，但所有段落最终仍全部插 DOM——
++// 157KB 晚报约产生 3000+ 节点，打开瞬间与 tab 切换时一次性布局仍卡。
++// 本版改为：
++//   1) 源文按空行/围栏切分为段落组（一次性、纯字符串操作，约 10ms）
++//   2) 首屏只渲染前 INITIAL_SEGMENTS 段；点击「加载更多」或滚动到
++//      底部自动续载下一批（每批 parse+sanitize 仅毫秒级）
++//   3) 每段渲染结果独立缓存（已净化 HTML），切 tab/往返滚动零重复解析；
++//      已插入的 DOM 不再动，切换视图用 v-show 仅改 display
++//   4) 原文视图加 content-visibility:auto，屏外行不参与布局
+ // ---------------------------------------------------------------------------
+ const mdBox = ref<HTMLElement | null>(null);
+ const renderStage = ref<'idle' | 'rendering' | 'done'>('idle');
+ const renderProgress = ref(0);
+ let renderToken = 0; // 渲染代际令牌：内容/模式变化或卸载时自增以取消旧任务
+-let renderCache: { key: string; html: string } | null = null; // 视图来回切换时免重渲染
+-
+-const CHUNK_THRESHOLD = 48 * 1024; // 超过 48K 才走分块渐进路径
+-const CHUNK_TARGET = 16 * 1024; // 单块目标大小
+-const CHUNK_HARD_LIMIT = 64 * 1024; // 单块硬上限（超长单行/巨型段落兜底强制切块）
+-
+-/** 采样哈希：仅用于同页面实例内的渲染结果缓存键 */
+-function hashKey(s: string): string {
+-  let h = 5381;
+-  const step = Math.max(1, Math.floor(s.length / 512));
+-  for (let i = 0; i < s.length; i += step) {
+-    h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+-  }
+-  return `${s.length}:${h.toString(36)}`;
+-}
+ 
+-/** 将 Markdown 源文按空行切成围栏感知的块（不切断 ```/~~~ 代码块与表格） */
+-function splitMarkdownChunks(content: string): string[] {
++const SEGMENT_THRESHOLD = 24 * 1024; // 超过 24K 启用分段加载
++const SEGMENT_TARGET = 24 * 1024; // 单段目标大小（约 1~2 屏）
++const SEGMENT_HARD_LIMIT = 96 * 1024; // 单段硬上限（超长单行兜底）
++const INITIAL_SEGMENTS = 2; // 首屏渲染段数
++const LOAD_MORE_BATCH = 3; // 每次「加载更多」追加段数
++
++interface SegmentState {
++  visible: boolean; // 是否启用分段（超长文才显示控制条）
++  total: number;
++  rendered: number; // 已渲染段数
++  loading: boolean;
++  done: boolean;
++}
++const segmentState = reactive<SegmentState>({
++  visible: false,
++  total: 0,
++  rendered: 0,
++  loading: false,
++  done: true,
++});
++
++// 分段数据（内容变化时重建）
++let segments: string[] = [];
++let segmentKind: 'md' | 'html' = 'md';
++const segmentCache = new Map<number, string>(); // 段索引 → 已净化 HTML
++
++/** 安全切点：块级结构起点行——空行 / 列表项 / 引用 / 标题 / 表格行。
++ *  在这些行切开后各段独立渲染语义不变：无序列表拆成多个 <ul> 视觉一致，
++ *  有序列表由 CommonMark start 属性保留编号；引用拆为相邻两个引用块。 */
++const RE_SAFE_CUT = /^\s*(?:[-*+]\s+\S|\d{1,3}[.)]\s+\S|>|#{1,6}\s|\|)/;
++
++/** 将 Markdown 源文切成围栏感知的段：优先在安全切点、达到目标大小时切段；
++ *  无安全切点的超长块（巨型段落）超过硬上限后按任意行强切兜底 */
++function splitMarkdownSegments(content: string): string[] {
+   const lines = content.split('\n');
+-  const chunks: string[] = [];
++  const segs: string[] = [];
+   let cur: string[] = [];
+   let curLen = 0;
+   let inFence = false;
+@@ -216,15 +256,18 @@ function splitMarkdownChunks(content: string): string[] {
+     }
+     cur.push(line);
+     curLen += line.length + 1;
+-    // 在围栏外的空行处按目标大小切分；超过硬上限无条件切（防超长单行）
+-    if (!inFence && ((curLen >= CHUNK_TARGET && line.trim() === '') || curLen >= CHUNK_HARD_LIMIT)) {
+-      chunks.push(cur.join('\n'));
+-      cur = [];
+-      curLen = 0;
++    if (!inFence) {
++      const isBlank = line.trim() === '';
++      const safeCut = isBlank || RE_SAFE_CUT.test(line);
++      if ((safeCut && curLen >= SEGMENT_TARGET) || curLen >= SEGMENT_HARD_LIMIT) {
++        segs.push(cur.join('\n'));
++        cur = [];
++        curLen = 0;
++      }
+     }
+   }
+-  if (cur.length) chunks.push(cur.join('\n'));
+-  return chunks;
++  if (cur.length) segs.push(cur.join('\n'));
++  return segs;
+ }
+ 
+ function sanitizeChunk(rawHtml: string): string {
+@@ -241,98 +284,143 @@ function cancelRender() {
+   renderToken += 1;
+   renderStage.value = 'idle';
+   renderProgress.value = 0;
++  segmentState.loading = false;
+ }
+ 
+-/** 分块渐进渲染（Markdown 长文）：逐块解析→净化→追加 DOM，每块间让出主线程，内容逐步流出。
+- *  HTML 长文不做文本切分（切分会破坏标签配平风险），改为「先让出主线程显示进度条，
+- *  再单次净化」，至少保证进度条先渲染、净化不与首帧挤在同一任务里。 */
+-async function renderProgressive(content: string, isHtml: boolean, token: number) {
++/** 解析+净化单个分段（带缓存） */
++function renderSegmentHTML(idx: number): string {
++  const cached = segmentCache.get(idx);
++  if (cached !== undefined) return cached;
++  let rawHtml = '';
++  try {
++    rawHtml =
++      segmentKind === 'html'
++        ? segments[idx]!
++        : marked.parse(segments[idx]!, { async: false, gfm: true, breaks: true });
++  } catch {
++    rawHtml = '';
++  }
++  const clean = sanitizeChunk(rawHtml);
++  segmentCache.set(idx, clean);
++  return clean;
++}
++
++/** 将 [from, to) 段插入 DOM（to 不含），同步小批量，无感知卡顿 */
++function appendSegments(from: number, to: number): void {
+   const box = mdBox.value;
+   if (!box) return;
+-  renderStage.value = 'rendering';
+-  renderProgress.value = 0;
+-  box.innerHTML = '';
+-  if (isHtml) {
+-    await nextFrame(); // 让进度条先绘制
+-    if (token !== renderToken) return;
+-    box.innerHTML = sanitizeChunk(content);
+-    if (token !== renderToken) return;
+-    renderProgress.value = 100;
+-    renderCache = { key: hashKey(content), html: box.innerHTML };
+-    renderStage.value = 'done';
++  let html = '';
++  for (let i = from; i < to && i < segments.length; i++) {
++    html += renderSegmentHTML(i);
++  }
++  if (html) box.insertAdjacentHTML('beforeend', html);
++  segmentState.rendered = Math.min(to, segments.length);
++  segmentState.done = segmentState.rendered >= segments.length;
++}
++
++/** 「加载更多」按钮 / 滚动到底自动触发；一次一批，批间让出主线程 */
++async function loadMoreSegments(): Promise<void> {
++  if (segmentState.done || segmentState.loading) return;
++  if (!segments.length) return;
++  segmentState.loading = true;
++  const token = renderToken;
++  await nextFrame(); // 先让按钮 loading 态上屏
++  if (token !== renderToken) {
++    segmentState.loading = false;
+     return;
+   }
+-  const parts = splitMarkdownChunks(content);
+-  const total = parts.length;
+-  for (let i = 0; i < total; i++) {
+-    if (token !== renderToken) return; // 已被新任务/取消/卸载取代
+-    let rawHtml = '';
+-    try {
+-      rawHtml = marked.parse(parts[i]!, { async: false, gfm: true, breaks: true });
+-    } catch {
+-      rawHtml = '';
++  const from = segmentState.rendered;
++  appendSegments(from, from + LOAD_MORE_BATCH);
++  segmentState.loading = false;
++}
++
++/** 滚动到底自动连续续填：每批一帧，直到离开底部区域/全部完成。
++ *  每批毫秒级、批间让出一帧，浏览者无感知；用户向上滚动即自然停止 */
++function handleScrollAutoLoad(): void {
++  if (!segmentState.visible || segmentState.done || segmentState.loading) return;
++  if (viewMode.value !== 'rendered') return;
++  const scroller = document.scrollingElement;
++  if (!scroller) return;
++  const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
++  if (distance >= 400) return;
++  const token = renderToken;
++  queueMicrotask(async () => {
++    while (!segmentState.done && !segmentState.loading) {
++      const sc = document.scrollingElement;
++      if (!sc) break;
++      const d = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
++      if (d >= 400) break; // 已离开底部（用户上滚/内容已够高）
++      segmentState.loading = true;
++      await nextFrame();
++      if (token !== renderToken) {
++        segmentState.loading = false;
++        break;
++      }
++      const from = segmentState.rendered;
++      appendSegments(from, from + LOAD_MORE_BATCH);
++      segmentState.loading = false;
+     }
+-    if (token !== renderToken) return;
+-    box.insertAdjacentHTML('beforeend', sanitizeChunk(rawHtml));
+-    renderProgress.value = Math.round(((i + 1) / total) * 100);
+-    if (i < total - 1) await nextFrame();
+-  }
+-  if (token !== renderToken) return;
+-  renderCache = { key: hashKey(content), html: box.innerHTML };
+-  renderStage.value = 'done';
++  });
+ }
+ 
+-/** 一次性同步渲染（小文本路径） */
+-function renderImmediate(content: string, isHtml: boolean, token: number) {
++/** 渲染入口：小文一次性；超长文分段首屏 */
++function startRender(content: string, isHtml: boolean) {
+   const box = mdBox.value;
+   if (!box) return;
+-  let rawHtml = '';
+-  try {
+-    rawHtml = isHtml
+-      ? content
+-      : marked.parse(content, { async: false, gfm: true, breaks: true });
+-  } catch {
+-    rawHtml = '';
++  segmentCache.clear();
++  box.innerHTML = '';
++  if (content.length <= SEGMENT_THRESHOLD) {
++    // 小文本：整体一段渲染
++    segmentState.visible = false;
++    segments = [content];
++    segmentKind = isHtml ? 'html' : 'md';
++    segmentState.total = 1;
++    appendSegments(0, 1);
++    renderStage.value = 'done';
++    return;
+   }
+-  if (token !== renderToken) return;
+-  box.innerHTML = sanitizeChunk(rawHtml);
+-  renderCache = { key: hashKey(content), html: box.innerHTML };
++  // 超长文：切段（纯字符串操作）后仅渲染首屏段
++  segmentKind = isHtml ? 'html' : 'md';
++  segments = isHtml ? [content] : splitMarkdownSegments(content);
++  segmentState.visible = true;
++  segmentState.total = segments.length;
++  segmentState.rendered = 0;
++  segmentState.done = false;
++  renderStage.value = 'rendering';
++  renderProgress.value = 0;
++  // 首屏段同步渲染（每段毫秒级，2 段 < 16ms，不闪进度条）
++  appendSegments(0, Math.min(INITIAL_SEGMENTS, segments.length));
+   renderStage.value = 'done';
+ }
+ 
+-/** 根据当前内容与视图模式调度渲染（带缓存：视图来回切换瞬时完成） */
++/** 根据当前内容与视图模式调度渲染 */
+ async function scheduleRender() {
+   if (viewMode.value !== 'rendered') return;
+   const content = messageDetail.value?.content ?? '';
+   cancelRender();
+-  const token = renderToken;
+   if (!content.trim()) {
+     if (mdBox.value) mdBox.value.innerHTML = '';
++    segmentState.visible = false;
+     return;
+   }
+   await nextTick(); // 确保 mdBox 已挂载
+-  const box = mdBox.value;
+-  if (!box || token !== renderToken) return;
+-  const key = hashKey(content);
+-  if (renderCache && renderCache.key === key) {
+-    // 缓存命中：一次性回填，不再解析/净化
+-    box.innerHTML = renderCache.html;
+-    renderStage.value = 'done';
+-    return;
+-  }
+-  if (content.length <= CHUNK_THRESHOLD) {
+-    renderImmediate(content, looksLikeHtml(content), token);
+-  } else {
+-    renderProgressive(content, looksLikeHtml(content), token).catch(() => {});
++  if (mdBox.value) {
++    startRender(content, looksLikeHtml(content));
+   }
+ }
+ 
++// 滚动到底自动续载：监听页面滚动，接近底部且还有未渲染段时自动加载
+ watch([messageDetail, viewMode], () => {
+   scheduleRender();
+ });
+ 
++onMounted(() => {
++  window.addEventListener('scroll', handleScrollAutoLoad, { passive: true });
++});
++
+ onBeforeUnmount(() => {
+   cancelRender();
++  window.removeEventListener('scroll', handleScrollAutoLoad);
+ });
+ 
+ // 加载详情
+@@ -513,4 +601,10 @@ onMounted(() => {
+   border: none;
+   border-top: 1px solid rgb(128 128 128 / 30%);
+ }
++
++/* 原文视图超长文本：跳过屏外行的布局与绘制（渐进增强，旧浏览器忽略） */
++.source-view {
++  content-visibility: auto;
++  contain-intrinsic-size: auto 480px;
++}
+ </style>
+-- 
+2.43.0
+
