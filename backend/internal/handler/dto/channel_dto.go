@@ -257,6 +257,55 @@ var ChannelTypeMetas = []ChannelTypeMeta{
 			},
 		},
 	},
+	{
+		Type:        ChannelTypeWebhook,
+		Name:        "自定义 Webhook",
+		Description: "通用 HTTP 推送：URL/方法/请求头/请求体模板均可自定义，占位符 {{title}}、{{content}}、{{timestamp}} 按内容类型自动转义",
+		ConfigFields: []ConfigField{
+			{
+				Name:        "url",
+				Label:       "目标地址",
+				Type:        "url",
+				Required:    true,
+				Placeholder: "https://example.com/hook 或 http://192.168.1.10:8080/notify",
+			},
+			{
+				Name:        "method",
+				Label:       "请求方法",
+				Type:        "string",
+				Required:    false,
+				Placeholder: "POST（默认，可选 PUT/PATCH/GET）",
+			},
+			{
+				Name:        "content_type",
+				Label:       "内容类型",
+				Type:        "string",
+				Required:    false,
+				Placeholder: "application/json（默认，可选 x-www-form-urlencoded / text/plain）",
+			},
+			{
+				Name:        "body_template",
+				Label:       "请求体模板（可选）",
+				Type:        "textarea",
+				Required:    false,
+				Placeholder: `{"title":"{{title}}","content":"{{content}}","ts":{{timestamp}}}；留空按内容类型使用默认模板；{{timestamp}} 为 Unix 秒（数字，不要加引号）`,
+			},
+			{
+				Name:        "headers",
+				Label:       "自定义请求头（可选）",
+				Type:        "textarea",
+				Required:    false,
+				Placeholder: `JSON 对象，如 {"Authorization":"Bearer xxx"}；或每行一个：Authorization: Bearer xxx`,
+			},
+			{
+				Name:        "timeout_sec",
+				Label:       "超时秒数（可选）",
+				Type:        "number",
+				Required:    false,
+				Placeholder: "30（1-120）",
+			},
+		},
+	},
 }
 
 // CreateChannelReq 创建推送渠道请求

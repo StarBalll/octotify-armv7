@@ -65,6 +65,14 @@
               :placeholder="field.placeholder"
               style="width: 100%"
             />
+            <!-- 多行文本类型（如自定义 Webhook 的请求体模板/请求头） -->
+            <ElInput
+              v-else-if="field.type === 'textarea'"
+              v-model="configData[field.name]"
+              type="textarea"
+              :rows="4"
+              :placeholder="field.placeholder"
+            />
             <!-- 默认文本类型 -->
             <ElInput
               v-else
