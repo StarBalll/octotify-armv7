@@ -7,7 +7,7 @@
 
 - **上游官方仓库**：[loommii/OctoTify](https://github.com/loommii/OctoTify) —— 一个轻量自托管通知网关，单 API 广播到多渠道（钉钉/飞书/TG/邮件/Gotify 等）。本项目的全部应用功能、前端 UI 与后端服务均来自该上游，**本仓库不修改任何业务功能**。
 - **本仓库**：[StarBalll/octotify-armv7](https://github.com/StarBalll/octotify-armv7) —— 仅承担「32位 ARM 交叉编译 + Docker 镜像交付 + 设备端部署编排」。
-- 补丁后源码快照：分支 [`octotify-source-armv7-fixes`](https://github.com/StarBalll/octotify-armv7/tree/octotify-source-armv7-fixes)（完整上游历史 + 4 处环境适配修复，见 [patches/](./patches/)）。
+- 补丁后源码快照：分支 [`octotify-source-armv7-fixes`](https://github.com/StarBalll/octotify-armv7/tree/octotify-source-armv7-fixes)（完整上游历史 + 4 处环境适配修复 + 1 处功能增强，见 [patches/](./patches/)）。
 - 若此项目对你有用，请先给上游 [loommii/OctoTify](https://github.com/loommii/OctoTify) 点个 Star ⭐。
 
 针对 OctoTify 官方不支持 ARMv7 (32位) 的问题，完成全流程交叉编译 + 自定义 Docker 镜像 + ARM 设备部署。
@@ -42,7 +42,7 @@
 | 镜像归档 | `out/octotify-armv7-v<版本>.tar` | 版本化命名（正式交付物） |
 | 稳定名副本 | `out/octotify-armv7.tar` | 设备端脚本引用的固定名 |
 | 部署包 | `octotify-armv7-deploy.tar.gz` | 稳定名（拷贝到设备的工作文件） |
-| 版本号 | `vMAJOR.MINOR.PATCH`（tag: `v1.0.0-armv7`） | SemVer；基线见 [VERSION](./VERSION) |
+| 版本号 | `vMAJOR.MINOR.PATCH`（tag: `v1.1.0-armv7`） | SemVer；基线见 [VERSION](./VERSION) |
 | 分支 | `main`（本工程）· `armv7-fixes`（上游源码补丁） | 补丁可 export 为 patches/ 应用到上游新版 |
 
 ## 目录结构
@@ -91,11 +91,12 @@ docker load -i octotify-armv7.tar && docker compose up -d
 ```bash
 curl -X POST "http://<设备IP>:5233/api/push/<推送令牌>" \
   -H 'Content-Type: application/json' \
-  -d '{"title":"构建完成","message":"octotify-armv7 v1.0.0 已发布，请查看 Release"}'
+  -d '{"title":"构建完成","message":"octotify-armv7 v1.1.0 已发布，请查看 Release"}'
 ```
 
 - `title` / `message` 均为字符串；响应 JSON 含**各渠道逐一投递的 results**（单渠道故障不影响其他渠道）。
 - 同一来源绑定多个渠道时，一次调用即全部广播。
+- 消息详情 WebUI 正文支持 Markdown/HTML 富文本展示（GFM + DOMPurify 净化，可切换"原文"）。
 
 ### 3. 集成到脚本（示例：CI 发布后通知 / 定时备份通知）
 
@@ -111,7 +112,9 @@ notify "夜间备份" "/data 备份完成, 大小 3.2G"
 
 完整端到端验证（注册→登录→建来源→推送）可直接跑仓库里的 `verify.sh`；其他可用字段与渠道类型见 `GET /api/channel-types`。
 
-## 上游源码修改（4 处，均为 armv7/局域网 HTTP 场景必需）
+## 上游源码修改（patches/，build.sh 幂等重放）
+
+### 环境适配修复（0001，4 处，局域网 HTTP 场景必需）
 
 | # | 文件 | 问题 |
 |---|---|---|
@@ -119,5 +122,13 @@ notify "夜间备份" "/data 备份完成, 大小 3.2G"
 | 2 | `source/detail.vue` | 复制按钮依赖 clipboard API（仅 HTTPS），局域网 HTTP 必失败 |
 | 3 | `source/detail.vue` | 查看令牌经密码二次验证后仍强制脱敏显示 |
 | 4 | `source/create.vue` | 创建来源时丢弃后端返回的推送令牌（仅此一次返回） |
+
+### 功能增强（0002，消息详情富文本渲染）
+
+| 文件 | 内容 |
+|---|---|
+| `message/detail.vue` | 消息详情正文支持 **Markdown（GFM）与 HTML** 安全渲染：marked 解析 + DOMPurify 净化（禁 iframe/object/embed/form 等，链接强制 `_blank`+`noopener`）；正文卡片提供「渲染视图 / 原文」切换；纯文本消息亦获得换行/链接/加粗等基础排版；中性配色兼容亮/暗主题 |
+| `web-ele/package.json` + `pnpm-lock.yaml` | 新增依赖 `marked@^18.0.12`、`dompurify@^3.4.15`（锁文件净 +17 行，frozen 安装验证通过） |
+| locale `page.json` ×2 | 新增 `page.message.viewRendered` / `viewSource` 文案 |
 
 构建参数关键差异（详见交付文档）：去 `-tags=sonic`（不支持32位）、musl 交叉工具链、`VITE_GLOB_API_URL=/`。

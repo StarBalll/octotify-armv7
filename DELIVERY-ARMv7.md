@@ -144,6 +144,8 @@ curl -X POST http://127.0.0.1:5233/api/push/<推送token> \
 
 **代码改动仅 2 处字符级修复**（不涉及任何功能）：两个 locale JSON 的尾随逗号。其余为构建层参数（去 sonic tag、musl 工具链、`.env.production.local` API 地址覆盖），二进制与前端均为官方源码原样编译产物。
 
+**功能增强（patches/0002，不改变推送协议）**：消息详情 WebUI 正文支持 Markdown（GFM）与 HTML 安全渲染——marked 解析 + DOMPurify 净化（禁 iframe/object/embed/form/base/meta，链接强制 `_blank`+`noopener`），正文卡片提供「渲染视图 / 原文」切换，纯文本消息亦获得换行/链接/加粗等基础排版；新增依赖 `marked@^18.0.12`、`dompurify@^3.4.15`（锁文件净 +17 行，frozen 安装与前端构建已验证）。API 推送字段（`title`/`message` 纯文本字符串）与各渠道投递行为完全不变，仅影响 WebUI 消息详情页的显示层。
+
 ---
 
 ## 六、文件清单

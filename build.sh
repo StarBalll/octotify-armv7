@@ -99,6 +99,19 @@ for f in "$REPO/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json" \
          "$REPO/frontend/apps/web-ele/src/locales/langs/en-US/page.json"; do
   perl -0777 -pi -e 's/("email": "(?:邮件|Email)"),(\s*\})/$1$2/' "$f"
 done
+# 关键点 2b：重放 patches/0002 —— 消息详情正文 Markdown/HTML 富文本渲染（幂等）。
+#           依赖 0001 已在上方应用（locale 尾随逗号 hunk 有区域重叠，需先就位）。
+#           0002 内置了 web-ele 新增依赖 marked/dompurify 的锁文件记录（净 +17 行），
+#           重放后 pnpm install --frozen-lockfile 可直接解析安装（已在纯净 worktree 验证：
+#           上游基线 + 0001 + 0002 → frozen 安装 → 前端构建 全通过）。
+if git -C "$REPO" apply --check "$ROOT/patches/0002-feat-message-detail-markdown-html-rendering.patch" 2>/dev/null; then
+  git -C "$REPO" apply "$ROOT/patches/0002-feat-message-detail-markdown-html-rendering.patch"
+  log "已重放 patches/0002（消息详情 Markdown/HTML 渲染）"
+elif grep -q "viewRendered" "$REPO/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json" 2>/dev/null; then
+  log "patches/0002 已在源码中，跳过重放"
+else
+  echo "::error::patches/0002 既无法应用也不在源码中（上游基线可能已变更）"; exit 1
+fi
 # 关键点 2c：来源详情页"查看令牌"通过密码二次验证后仍显示脱敏星号（showTokenPlainText
 #           被置 false），用户看不到完整 token——改为验证后直接显示明文（幂等）。
 python3 - "$REPO/frontend/apps/web-ele/src/views/source/detail.vue" <<'PYEOF2'
