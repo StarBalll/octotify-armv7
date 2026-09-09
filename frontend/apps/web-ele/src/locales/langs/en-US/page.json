@@ -173,7 +173,8 @@
     "invalidId": "Invalid message ID",
     "messageTitle": "Message Title",
     "viewRendered": "Rendered",
-    "viewSource": "Source"
+    "viewSource": "Source",
+    "rendering": "Rendering body"
   },
   "settings": {
     "title": "Settings",
