@@ -99,6 +99,9 @@ func (s *MessageService) ListMessages(ctx context.Context, userID int64, pageReq
 		})
 	}
 
+	// 批量填充来源名称/渠道名称/渠道类型（UI 列表需要展示）
+	s.fillSourceAndChannelNames(ctx, list)
+
 	s.log(ctx).Info("查询消息列表成功",
 		zap.Int64("user_id", userID),
 		zap.Int("page", pageReq.Page),
@@ -107,6 +110,69 @@ func (s *MessageService) ListMessages(ctx context.Context, userID int64, pageReq
 	)
 
 	return list, total, nil
+}
+
+// fillSourceAndChannelNames 批量填充消息列表 DTO 的来源名称/渠道名称/渠道类型。
+// 列表接口的 UI 表格需要展示名称（与详情接口 GetMessageByID 行为一致）；
+// 使用 IN 批量查询避免 N+1。填充失败不影响列表本身，仅记录告警日志。
+func (s *MessageService) fillSourceAndChannelNames(ctx context.Context, list []*dto.MessageDTO) {
+	if len(list) == 0 {
+		return
+	}
+	q := query.Use(s.db)
+
+	// 去重收集需要查询的来源/渠道 ID
+	sourceIDs := make([]int64, 0, len(list))
+	channelIDs := make([]int64, 0, len(list))
+	seenSource := make(map[int64]struct{}, len(list))
+	seenChannel := make(map[int64]struct{}, len(list))
+	for _, m := range list {
+		if _, ok := seenSource[m.SourceID]; !ok {
+			seenSource[m.SourceID] = struct{}{}
+			sourceIDs = append(sourceIDs, m.SourceID)
+		}
+		if _, ok := seenChannel[m.ChannelID]; !ok {
+			seenChannel[m.ChannelID] = struct{}{}
+			channelIDs = append(channelIDs, m.ChannelID)
+		}
+	}
+
+	// 批量查询来源名称
+	sources, err := q.Source.WithContext(ctx).
+		Where(q.Source.ID.In(sourceIDs...)).
+		Select(q.Source.ID, q.Source.Name).
+		Find()
+	if err != nil {
+		s.log(ctx).Warn("批量查询来源名称失败", zap.Error(err))
+	} else {
+		nameByID := make(map[int64]string, len(sources))
+		for _, src := range sources {
+			nameByID[src.ID] = src.Name
+		}
+		for _, m := range list {
+			m.SourceName = nameByID[m.SourceID]
+		}
+	}
+
+	// 批量查询渠道名称与类型
+	channels, err := q.Channel.WithContext(ctx).
+		Where(q.Channel.ID.In(channelIDs...)).
+		Select(q.Channel.ID, q.Channel.Name, q.Channel.Type).
+		Find()
+	if err != nil {
+		s.log(ctx).Warn("批量查询渠道信息失败", zap.Error(err))
+	} else {
+		nameByID := make(map[int64]string, len(channels))
+		typeByID := make(map[int64]string, len(channels))
+		for _, ch := range channels {
+			nameByID[ch.ID] = ch.Name
+			typeByID[ch.ID] = ch.Type
+		}
+		for _, m := range list {
+			m.ChannelName = nameByID[m.ChannelID]
+			m.ChannelType = typeByID[m.ChannelID]
+		}
+	}
 }
 
 // FilterMessages 筛选消息记录
@@ -195,6 +261,9 @@ func (s *MessageService) FilterMessages(ctx context.Context, userID int64, filte
 			UpdatedAt: msg.UpdatedAt.UnixMilli(),
 		})
 	}
+
+	// 批量填充来源名称/渠道名称/渠道类型（UI 列表需要展示）
+	s.fillSourceAndChannelNames(ctx, list)
 
 	s.log(ctx).Info("筛选消息列表成功",
 		zap.Int64("user_id", userID),

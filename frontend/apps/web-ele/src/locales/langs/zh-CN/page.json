@@ -19,7 +19,9 @@
     "sourceName": "来源名称",
     "channelName": "渠道名称",
     "status": "状态",
-    "createTime": "创建时间"
+    "createTime": "创建时间",
+    "noRecords": "暂无推送记录",
+    "loadRecentFailed": "加载最近推送记录失败"
   },
   "source": {
     "title": "消息来源",

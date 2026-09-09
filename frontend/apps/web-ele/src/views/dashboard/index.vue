@@ -34,7 +34,8 @@
         :data="recentMessages"
         stripe
         style="width: 100%"
-        empty-text="暂无推送记录"
+        :empty-text="$t('page.dashboard.noRecords')"
+        @row-click="handleRowClick"
       >
         <ElTableColumn
           prop="title"
@@ -45,7 +46,7 @@
           <template #default="{ row }">
             <a
               class="text-blue-500 hover:text-blue-700 cursor-pointer"
-              @click="handleViewDetail(row.id)"
+              @click.stop="handleViewDetail(row.id)"
             >
               {{ row.title }}
             </a>
@@ -54,19 +55,27 @@
 
         <ElTableColumn
           prop="source_name"
-          label="来源名称"
+          :label="$t('page.dashboard.sourceName')"
           min-width="120"
           show-overflow-tooltip
-        />
+        >
+          <template #default="{ row }">
+            {{ row.source_name || '--' }}
+          </template>
+        </ElTableColumn>
 
         <ElTableColumn
           prop="channel_name"
-          label="渠道名称"
+          :label="$t('page.dashboard.channelName')"
           min-width="120"
           show-overflow-tooltip
-        />
+        >
+          <template #default="{ row }">
+            {{ row.channel_name || '--' }}
+          </template>
+        </ElTableColumn>
 
-        <ElTableColumn prop="status" label="状态" width="100" align="center">
+        <ElTableColumn prop="status" :label="$t('page.dashboard.status')" width="100" align="center">
           <template #default="{ row }">
             <ElTag :type="getStatusTagType(row.status)" size="small">
               {{ getStatusLabel(row.status) }}
@@ -74,7 +83,7 @@
           </template>
         </ElTableColumn>
 
-        <ElTableColumn prop="created_at_ts" label="创建时间" width="180">
+        <ElTableColumn prop="created_at_ts" :label="$t('page.dashboard.createTime')" width="180">
           <template #default="{ row }">
             {{ formatTimestamp(row.created_at_ts) }}
           </template>
@@ -86,6 +95,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElCard, ElRow, ElCol, ElTable, ElTableColumn, ElTag, ElMessage } from 'element-plus';
 import { IconifyIcon } from '@vben/icons';
 import { $t } from '#/locales';
@@ -94,6 +104,8 @@ import { getChannelListApi } from '#/api/modules/channel';
 import { getMessageListApi, filterMessagesApi, type MessageApi } from '#/api/modules/message';
 import { formatTimestamp } from '#/utils/time';
 import { getMessageStatusLabel, getMessageStatusTagType } from '#/utils/status';
+
+const router = useRouter();
 
 // 统计数据
 const statData = ref({
@@ -206,17 +218,21 @@ async function loadRecentMessages() {
     const res = await getMessageListApi({ page: 1, page_size: 10 });
     recentMessages.value = res?.list ?? [];
   } catch (error) {
-    ElMessage.error('加载最近推送记录失败');
+    ElMessage.error($t('page.dashboard.loadRecentFailed'));
     console.error('Failed to load recent messages:', error);
   } finally {
     tableLoading.value = false;
   }
 }
 
-// 查看消息详情
+// 查看消息详情：点击行或标题跳转至消息详情页
+function handleRowClick(row: MessageApi.MessageDTO) {
+  handleViewDetail(row.id);
+}
+
 function handleViewDetail(messageId: number) {
-  // TODO: 跳转至消息详情页
-  ElMessage.info(`查看消息详情: ${messageId}`);
+  if (!messageId) return;
+  router.push(`/message/detail/${messageId}`);
 }
 
 // 初始化加载

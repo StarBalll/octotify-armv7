@@ -57,7 +57,7 @@ test.describe('B-Dashboard: 仪表盘', () => {
     await expect(page.getByText('创建时间')).toBeVisible();
   });
 
-  test('B-55: 点击"查看详情"显示 toast（非导航）', async ({ page }) => {
+  test('B-55: 点击标题跳转至消息详情页', async ({ page }) => {
     await page.goto('/dashboard/index');
     await page.waitForURL(/\/dashboard/, { timeout: 10000 });
 
@@ -72,16 +72,16 @@ test.describe('B-Dashboard: 仪表盘', () => {
       const isLinkVisible = await firstTitleLink.isVisible().catch(() => false);
 
       if (isLinkVisible) {
-        const urlBeforeClick = page.url();
         await firstTitleLink.click();
 
-        const toast = page.locator('.el-message').filter({ hasText: /查看消息详情/ });
-        await expect(toast).toBeVisible({ timeout: 5000 });
+        // 点击标题应导航至消息详情页 /message/detail/<id>
+        await page.waitForURL(/\/message\/detail\/\d+/, { timeout: 10000 });
+        expect(page.url()).toMatch(/\/message\/detail\/\d+/);
 
-        const toastContent = await toast.textContent();
-        expect(toastContent).toContain('查看消息详情');
-
-        expect(page.url()).toBe(urlBeforeClick);
+        // 详情页应完成加载（出现"返回"按钮或消息描述区）
+        await expect(page.locator('.el-descriptions').first()).toBeVisible({
+          timeout: 10000,
+        });
       }
     }
   });

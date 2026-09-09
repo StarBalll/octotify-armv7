@@ -19,7 +19,9 @@
     "sourceName": "Source Name",
     "channelName": "Channel Name",
     "status": "Status",
-    "createTime": "Create Time"
+    "createTime": "Create Time",
+    "noRecords": "No push records",
+    "loadRecentFailed": "Failed to load recent pushes"
   },
   "source": {
     "title": "Sources",
