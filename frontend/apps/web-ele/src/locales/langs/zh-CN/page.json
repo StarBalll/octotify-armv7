@@ -174,7 +174,9 @@
     "messageTitle": "消息标题",
     "viewRendered": "渲染视图",
     "viewSource": "原文",
-    "rendering": "正在渲染正文"
+    "rendering": "正在渲染正文",
+    "loadMore": "加载更多",
+    "allLoaded": "已加载全部"
   },
   "settings": {
     "title": "系统设置",

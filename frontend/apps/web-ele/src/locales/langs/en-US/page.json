@@ -174,7 +174,9 @@
     "messageTitle": "Message Title",
     "viewRendered": "Rendered",
     "viewSource": "Source",
-    "rendering": "Rendering body"
+    "rendering": "Rendering body",
+    "loadMore": "Load more",
+    "allLoaded": "All loaded"
   },
   "settings": {
     "title": "Settings",
