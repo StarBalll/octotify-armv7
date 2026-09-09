@@ -1,1 +1,0 @@
-import{xr as e}from"../jse/index-index-3cKh0oBQ.js";e();var t=(e=``)=>e.replace(/[|\\{}()[\]^$+*?.]/g,`\\$&`).replace(/-/g,`\\x2d`);export{t};

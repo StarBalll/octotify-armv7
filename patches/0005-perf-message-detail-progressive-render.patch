@@ -1,0 +1,318 @@
+From d87f5d456d2f37a6b2308089de3914e12a963480 Mon Sep 17 00:00:00 2001
+From: OctoTify ARMv7 Builder <builder@armv7.local>
+Date: Wed, 9 Sep 2026 23:57:41 +0800
+Subject: [PATCH] =?UTF-8?q?perf(frontend):=20=E6=B6=88=E6=81=AF=E8=AF=A6?=
+ =?UTF-8?q?=E6=83=85=E8=B6=85=E9=95=BF=E6=AD=A3=E6=96=87=E5=88=86=E5=9D=97?=
+ =?UTF-8?q?=E6=B8=90=E8=BF=9B=E6=B8=B2=E6=9F=93=EF=BC=8C=E6=B6=88=E9=99=A4?=
+ =?UTF-8?q?=20200K=20=E7=BA=A7=E6=96=87=E6=9C=AC=E5=8D=A1=E6=AD=BB?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+问题：renderedHtml 为 computed，整条消息一次性同步执行
+marked.parse + DOMPurify.sanitize + v-html 大 DOM 解析，
+200K 文本（输出约 360KB HTML）在主线程单任务内完成，
+UI 冻结数秒（移动端尤甚）。
+
+方案：
+- < 48K：保持一次性同步渲染（行为不变）
+- ≥ 48K Markdown：按空行分块（围栏感知，不切断代码块/表格，
+  单块 16K 目标 / 64K 硬上限），逐块「解析→净化→insertAdjacentHTML
+  追加」，块间 setTimeout(0) 让出主线程，内容逐步流出，
+  期间显示进度条（新增 page.message.rendering 文案）
+- ≥ 48K HTML：不切分（避免标签配平风险），先让出主线程绘制
+  进度条再单次净化
+- 渲染代际令牌：内容/视图模式变化、组件卸载即取消旧任务
+- 渲染结果缓存（采样哈希键）：渲染视图/原文来回切换瞬时回填
+- 容器改 ref 手动挂载，去除 v-html 整体重赋值
+
+基准（x86 node）：200K markdown 整体 parse 50ms；分块 13 块
+共 41ms，每块间可让出主线程；DOMPurify 净化随分块降至毫秒级。
+---
+ .../web-ele/src/locales/langs/en-US/page.json |   3 +-
+ .../web-ele/src/locales/langs/zh-CN/page.json |   3 +-
+ .../apps/web-ele/src/views/message/detail.vue | 207 ++++++++++++++++--
+ 3 files changed, 193 insertions(+), 20 deletions(-)
+
+diff --git a/frontend/apps/web-ele/src/locales/langs/en-US/page.json b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+index d82bd71..061a074 100644
+--- a/frontend/apps/web-ele/src/locales/langs/en-US/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/en-US/page.json
+@@ -173,7 +173,8 @@
+     "invalidId": "Invalid message ID",
+     "messageTitle": "Message Title",
+     "viewRendered": "Rendered",
+-    "viewSource": "Source"
++    "viewSource": "Source",
++    "rendering": "Rendering body"
+   },
+   "settings": {
+     "title": "Settings",
+diff --git a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+index 2924871..ae07eb2 100644
+--- a/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
++++ b/frontend/apps/web-ele/src/locales/langs/zh-CN/page.json
+@@ -173,7 +173,8 @@
+     "invalidId": "无效的消息 ID",
+     "messageTitle": "消息标题",
+     "viewRendered": "渲染视图",
+-    "viewSource": "原文"
++    "viewSource": "原文",
++    "rendering": "正在渲染正文"
+   },
+   "settings": {
+     "title": "系统设置",
+diff --git a/frontend/apps/web-ele/src/views/message/detail.vue b/frontend/apps/web-ele/src/views/message/detail.vue
+index 84f2d9a..b26521e 100644
+--- a/frontend/apps/web-ele/src/views/message/detail.vue
++++ b/frontend/apps/web-ele/src/views/message/detail.vue
+@@ -52,13 +52,29 @@
+           >
+             {{ messageDetail.content || '--' }}
+           </div>
+-          <!-- 渲染视图：Markdown / HTML 经 DOMPurify 净化后展示 -->
+-          <div
+-            v-else-if="renderedHtml"
+-            class="message-rich-body"
+-            v-html="renderedHtml"
+-          ></div>
+-          <div v-else class="leading-relaxed opacity-50">--</div>
++          <!-- 渲染视图：Markdown / HTML 经 DOMPurify 净化后展示。
++               超长文本走分块渐进渲染（每块间让出主线程），渲染期间显示进度条 -->
++          <template v-else>
++            <div
++              v-if="renderStage === 'rendering'"
++              class="mb-2 flex items-center gap-3"
++            >
++              <span class="text-xs whitespace-nowrap opacity-60">
++                {{ $t('page.message.rendering') }}
++              </span>
++              <ElProgress
++                :percentage="renderProgress"
++                :stroke-width="6"
++                class="flex-1"
++              />
++            </div>
++            <div
++              v-show="hasContent"
++              ref="mdBox"
++              class="message-rich-body"
++            ></div>
++            <div v-if="!hasContent" class="leading-relaxed opacity-50">--</div>
++          </template>
+         </ElCard>
+ 
+         <!-- 来源信息 -->
+@@ -93,7 +109,7 @@
+ </template>
+ 
+ <script setup lang="ts">
+-import { computed, ref, onMounted } from 'vue';
++import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
+ import { useRoute, useRouter } from 'vue-router';
+ import { marked } from 'marked';
+ import DOMPurify from 'dompurify';
+@@ -106,6 +122,7 @@ import {
+   ElMessage,
+   ElRadioGroup,
+   ElRadioButton,
++  ElProgress,
+ } from 'element-plus';
+ import { IconifyIcon } from '@vben/icons';
+ import { $t } from '#/locales';
+@@ -149,21 +166,173 @@ function looksLikeHtml(content: string): boolean {
+ 
+ const hasContent = computed(() => Boolean(messageDetail.value?.content?.trim()));
+ 
+-// 渲染视图 HTML：HTML 直接净化；其余内容一律按 GFM Markdown 解析
+-// （纯文本消息也能获得换行/链接/加粗等基础排版），输出统一经 DOMPurify 净化防 XSS
+-const renderedHtml = computed(() => {
+-  const content = messageDetail.value?.content ?? '';
+-  if (!content.trim()) return '';
++// ---------------------------------------------------------------------------
++// 超长文本渐进渲染：
++// marked 解析本身很快（200K 约 50ms），真正卡死页面的是
++//   1) DOMPurify 对数百 KB 输出 HTML 的整棵 DOM 净化
++//   2) 浏览器一次性 innerHTML 数万节点的解析与布局
++// 三者同步串在一次主线程任务里会导致 UI 冻结数秒（移动端尤甚）。
++// 方案：按空行分块（围栏感知，不切断代码块/表格），逐块「解析→净化→追加 DOM」，
++// 每块间 setTimeout(0) 让出主线程；小文本（< CHUNK_THRESHOLD）保持一次性
++// 同步路径。每次渲染可取消（route 变化/内容变化/组件卸载）。
++// ---------------------------------------------------------------------------
++const mdBox = ref<HTMLElement | null>(null);
++const renderStage = ref<'idle' | 'rendering' | 'done'>('idle');
++const renderProgress = ref(0);
++let renderToken = 0; // 渲染代际令牌：内容/模式变化或卸载时自增以取消旧任务
++let renderCache: { key: string; html: string } | null = null; // 视图来回切换时免重渲染
++
++const CHUNK_THRESHOLD = 48 * 1024; // 超过 48K 才走分块渐进路径
++const CHUNK_TARGET = 16 * 1024; // 单块目标大小
++const CHUNK_HARD_LIMIT = 64 * 1024; // 单块硬上限（超长单行/巨型段落兜底强制切块）
++
++/** 采样哈希：仅用于同页面实例内的渲染结果缓存键 */
++function hashKey(s: string): string {
++  let h = 5381;
++  const step = Math.max(1, Math.floor(s.length / 512));
++  for (let i = 0; i < s.length; i += step) {
++    h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
++  }
++  return `${s.length}:${h.toString(36)}`;
++}
++
++/** 将 Markdown 源文按空行切成围栏感知的块（不切断 ```/~~~ 代码块与表格） */
++function splitMarkdownChunks(content: string): string[] {
++  const lines = content.split('\n');
++  const chunks: string[] = [];
++  let cur: string[] = [];
++  let curLen = 0;
++  let inFence = false;
++  let fenceMark = '';
++  for (const line of lines) {
++    const m = /^(```|~~~)/.exec(line.trim());
++    if (m) {
++      if (!inFence) {
++        inFence = true;
++        fenceMark = m[1]![0]!;
++      } else if (m[1]![0] === fenceMark) {
++        inFence = false;
++      }
++    }
++    cur.push(line);
++    curLen += line.length + 1;
++    // 在围栏外的空行处按目标大小切分；超过硬上限无条件切（防超长单行）
++    if (!inFence && ((curLen >= CHUNK_TARGET && line.trim() === '') || curLen >= CHUNK_HARD_LIMIT)) {
++      chunks.push(cur.join('\n'));
++      cur = [];
++      curLen = 0;
++    }
++  }
++  if (cur.length) chunks.push(cur.join('\n'));
++  return chunks;
++}
++
++function sanitizeChunk(rawHtml: string): string {
++  return DOMPurify.sanitize(rawHtml, {
++    FORBID_TAGS: ['iframe', 'object', 'embed', 'form', 'base', 'meta'],
++  });
++}
++
++const nextFrame = (): Promise<void> =>
++  new Promise((resolve) => setTimeout(resolve, 0));
++
++/** 取消进行中的渲染任务 */
++function cancelRender() {
++  renderToken += 1;
++  renderStage.value = 'idle';
++  renderProgress.value = 0;
++}
++
++/** 分块渐进渲染（Markdown 长文）：逐块解析→净化→追加 DOM，每块间让出主线程，内容逐步流出。
++ *  HTML 长文不做文本切分（切分会破坏标签配平风险），改为「先让出主线程显示进度条，
++ *  再单次净化」，至少保证进度条先渲染、净化不与首帧挤在同一任务里。 */
++async function renderProgressive(content: string, isHtml: boolean, token: number) {
++  const box = mdBox.value;
++  if (!box) return;
++  renderStage.value = 'rendering';
++  renderProgress.value = 0;
++  box.innerHTML = '';
++  if (isHtml) {
++    await nextFrame(); // 让进度条先绘制
++    if (token !== renderToken) return;
++    box.innerHTML = sanitizeChunk(content);
++    if (token !== renderToken) return;
++    renderProgress.value = 100;
++    renderCache = { key: hashKey(content), html: box.innerHTML };
++    renderStage.value = 'done';
++    return;
++  }
++  const parts = splitMarkdownChunks(content);
++  const total = parts.length;
++  for (let i = 0; i < total; i++) {
++    if (token !== renderToken) return; // 已被新任务/取消/卸载取代
++    let rawHtml = '';
++    try {
++      rawHtml = marked.parse(parts[i]!, { async: false, gfm: true, breaks: true });
++    } catch {
++      rawHtml = '';
++    }
++    if (token !== renderToken) return;
++    box.insertAdjacentHTML('beforeend', sanitizeChunk(rawHtml));
++    renderProgress.value = Math.round(((i + 1) / total) * 100);
++    if (i < total - 1) await nextFrame();
++  }
++  if (token !== renderToken) return;
++  renderCache = { key: hashKey(content), html: box.innerHTML };
++  renderStage.value = 'done';
++}
++
++/** 一次性同步渲染（小文本路径） */
++function renderImmediate(content: string, isHtml: boolean, token: number) {
++  const box = mdBox.value;
++  if (!box) return;
++  let rawHtml = '';
+   try {
+-    const rawHtml = looksLikeHtml(content)
++    rawHtml = isHtml
+       ? content
+       : marked.parse(content, { async: false, gfm: true, breaks: true });
+-    return DOMPurify.sanitize(rawHtml, {
+-      FORBID_TAGS: ['iframe', 'object', 'embed', 'form', 'base', 'meta'],
+-    });
+   } catch {
+-    return '';
++    rawHtml = '';
+   }
++  if (token !== renderToken) return;
++  box.innerHTML = sanitizeChunk(rawHtml);
++  renderCache = { key: hashKey(content), html: box.innerHTML };
++  renderStage.value = 'done';
++}
++
++/** 根据当前内容与视图模式调度渲染（带缓存：视图来回切换瞬时完成） */
++async function scheduleRender() {
++  if (viewMode.value !== 'rendered') return;
++  const content = messageDetail.value?.content ?? '';
++  cancelRender();
++  const token = renderToken;
++  if (!content.trim()) {
++    if (mdBox.value) mdBox.value.innerHTML = '';
++    return;
++  }
++  await nextTick(); // 确保 mdBox 已挂载
++  const box = mdBox.value;
++  if (!box || token !== renderToken) return;
++  const key = hashKey(content);
++  if (renderCache && renderCache.key === key) {
++    // 缓存命中：一次性回填，不再解析/净化
++    box.innerHTML = renderCache.html;
++    renderStage.value = 'done';
++    return;
++  }
++  if (content.length <= CHUNK_THRESHOLD) {
++    renderImmediate(content, looksLikeHtml(content), token);
++  } else {
++    renderProgressive(content, looksLikeHtml(content), token).catch(() => {});
++  }
++}
++
++watch([messageDetail, viewMode], () => {
++  scheduleRender();
++});
++
++onBeforeUnmount(() => {
++  cancelRender();
+ });
+ 
+ // 加载详情
+@@ -186,6 +355,8 @@ async function loadDetail() {
+   }
+ }
+ 
++// 渲染调度由 watch(messageDetail/viewMode) 驱动（见 scheduleRender）
++
+ // 加载渠道类型元数据
+ async function loadTypeMeta() {
+   try {
+-- 
+2.43.0
+
