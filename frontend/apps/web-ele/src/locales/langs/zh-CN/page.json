@@ -169,7 +169,9 @@
     "loadFailed": "加载消息列表失败",
     "loadDetailFailed": "加载消息详情失败",
     "invalidId": "无效的消息 ID",
-    "messageTitle": "消息标题"
+    "messageTitle": "消息标题",
+    "viewRendered": "渲染视图",
+    "viewSource": "原文"
   },
   "settings": {
     "title": "系统设置",

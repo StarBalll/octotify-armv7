@@ -169,7 +169,9 @@
     "loadFailed": "Failed to load message list",
     "loadDetailFailed": "Failed to load message detail",
     "invalidId": "Invalid message ID",
-    "messageTitle": "Message Title"
+    "messageTitle": "Message Title",
+    "viewRendered": "Rendered",
+    "viewSource": "Source"
   },
   "settings": {
     "title": "Settings",

@@ -43,7 +43,9 @@
     "@vueuse/core": "catalog:",
     "@vueuse/integrations": "catalog:",
     "dayjs": "catalog:",
+    "dompurify": "^3.4.15",
     "element-plus": "catalog:",
+    "marked": "^18.0.12",
     "pinia": "catalog:",
     "vue": "catalog:",
     "vue-router": "catalog:"
